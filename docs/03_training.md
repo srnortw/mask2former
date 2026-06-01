@@ -1,5 +1,52 @@
 # 03 — Training
 
+## What We Actually Did (Build Log)
+
+### Key Decisions
+
+**Backbone: Swin-Small** (mid-tier)
+- Swin-Tiny: 47M params, ~8GB VRAM
+- **Swin-Small: 69M params, ~10GB VRAM ← chosen**
+- Swin-Base: 107M params, ~14GB VRAM
+- Colab T4 has 15GB — Swin-Small fits comfortably with batch size 4
+
+**Framework: HuggingFace `transformers`** instead of detectron2
+- Same Mask2Former architecture
+- `pip install transformers` — no complex detectron2 build
+- Native HF Hub integration for model push
+- Pretrained checkpoint: `facebook/mask2former-swin-small-coco-instance`
+
+**MLflow: DagsHub** instead of Render.com
+- Render.com free tier (512MB RAM) → OOM with recent MLflow versions
+- DagsHub: free, persistent, purpose-built for ML experiment tracking
+- Tracking URI: `https://dagshub.com/srnortw/mask2former.mlflow`
+
+### Source Files Written
+
+| File | Purpose |
+|---|---|
+| `src/models/mask2former.py` | Model build, phase freezing, optimizer, scheduler |
+| `src/train.py` | Full training loop with gradual freezing + MLflow |
+| `src/evaluate.py` | COCO segmentation evaluation (mask AP) |
+| `notebooks/train_colab.ipynb` | 10-cell Colab notebook, ready to run |
+
+### Colab Secrets to Add
+
+Before running the notebook, add these in Colab → 🔑 Secrets:
+
+| Secret | Value |
+|---|---|
+| `ROBOFLOW_API_KEY` | from `.env` |
+| `HF_TOKEN` | from `.env` |
+| `MONGO_URI` | from `.env` |
+| `MLFLOW_TRACKING_URI` | `https://dagshub.com/srnortw/mask2former.mlflow` |
+| `MLFLOW_TRACKING_PASSWORD` | DagsHub token from `.env` |
+
+### HF Repo ID
+`srnortw/mask2former-lane-seg` (private)
+
+---
+
 ## Overview
 
 ```
