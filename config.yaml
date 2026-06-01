@@ -118,7 +118,7 @@ augmentation:
 # -----------------------------------------------------------------------------
 model:
   architecture: mask2former
-  backbone: swin_tiny          # swin_tiny | swin_small | swin_base
+  backbone: swin_small         # swin_tiny | swin_small | swin_base
   pretrained: true             # load ImageNet/COCO pretrained weights
   num_classes: 5               # Lane-Markings, Left/Right Boundary Dashed/Solid
 
