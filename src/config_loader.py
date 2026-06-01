@@ -85,3 +85,4 @@ if __name__ == "__main__":
     print(f"Phase3 epochs:     {cfg.freezing.phase3.start_epoch} → {cfg.freezing.phase3.end_epoch}")
     print(f"MLflow URI:        {cfg.services.mlflow.tracking_uri}")
     print(f"MongoDB DB:        {cfg.services.mongodb.db_name}")
+    print(f"MLflow user:       {cfg.services.mlflow.tracking_username}")

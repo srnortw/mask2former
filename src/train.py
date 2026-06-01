@@ -70,7 +70,9 @@ def train(cfg=None):
     if cfg.training.compile_model and hasattr(torch, "compile"):
         model = torch.compile(model)
 
-    # MLflow
+    # MLflow — set DagsHub auth before connecting
+    os.environ["MLFLOW_TRACKING_USERNAME"] = cfg.services.mlflow.tracking_username
+    os.environ["MLFLOW_TRACKING_PASSWORD"] = cfg.services.mlflow.tracking_password
     mlflow.set_tracking_uri(cfg.services.mlflow.tracking_uri)
     mlflow.set_experiment(cfg.services.mlflow.experiment_name)
 
