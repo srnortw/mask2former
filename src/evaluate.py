@@ -40,7 +40,7 @@ def evaluate(model, val_loader, device, score_threshold: float = 0.5):
                         "image_id":     img_id,
                         "category_id":  labels[q].item() + 1,  # COCO is 1-indexed
                         "segmentation": rle,
-                        "score":        scores.values[q].item(),
+                        "score":        scores[q].item(),
                     })
 
     if not results:
