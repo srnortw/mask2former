@@ -1,0 +1,276 @@
+# =============================================================================
+# MASK2FORMER PIPELINE CONFIGURATION
+# Environment variables are referenced as ${VAR_NAME} and loaded from .env
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# EXTERNAL SERVICES  (values come from .env)
+# -----------------------------------------------------------------------------
+services:
+  roboflow:
+    api_key:   ${ROBOFLOW_API_KEY}
+    workspace: ${ROBOFLOW_WORKSPACE}
+    project:   ${ROBOFLOW_PROJECT}
+    version:   ${ROBOFLOW_VERSION}
+    format:    coco-segmentation
+
+  huggingface:
+    token:   ${HF_TOKEN}
+    repo_id: ${HF_REPO_ID}
+    model_files:
+      fp32: mask2former_fp32.onnx
+      int8: mask2former_int8.onnx
+
+  mongodb:
+    uri:                    ${MONGO_URI}
+    db_name:                ${MONGO_DB_NAME}
+    collection_predictions: ${MONGO_COLLECTION_PREDICTIONS}
+    collection_drift:       ${MONGO_COLLECTION_DRIFT}
+
+  mlflow:
+    tracking_uri:    ${MLFLOW_TRACKING_URI}
+    experiment_name: ${MLFLOW_EXPERIMENT_NAME}
+
+# -----------------------------------------------------------------------------
+# DATA
+# -----------------------------------------------------------------------------
+data:
+  raw_dir:         data/raw
+  processed_dir:   data/processed
+  calibration_dir: data/calibration
+  train_subdir:    train
+  val_subdir:      valid
+  test_subdir:     test
+  ann_filename:    _annotations.coco.json
+
+  calibration:
+    n_images: 200            # number of images for INT8 calibration
+
+  dataloader:
+    img_size:    512         # input resolution (H x W)
+    batch_size:  4
+    num_workers: 2           # 2 for Colab, 4 for local
+    pin_memory:  true
+    drop_last:   true        # avoid batch size=1 at end of epoch
+
+# -----------------------------------------------------------------------------
+# AUGMENTATION  (Albumentations — applied every epoch with new random state)
+# -----------------------------------------------------------------------------
+augmentation:
+  train:
+    horizontal_flip:
+      enabled: true
+      p: 0.5
+
+    shift_scale_rotate:
+      enabled: true
+      shift_limit: 0.1
+      scale_limit: 0.2
+      rotate_limit: 15
+      border_mode: 0         # constant (black) padding
+      p: 0.5
+
+    random_resized_crop:
+      enabled: true
+      scale_min: 0.7
+      scale_max: 1.0
+      p: 0.5
+
+    random_brightness_contrast:
+      enabled: true
+      brightness_limit: 0.2
+      contrast_limit: 0.2
+      p: 0.4
+
+    hue_saturation_value:
+      enabled: true
+      hue_shift_limit: 10
+      sat_shift_limit: 20
+      val_shift_limit: 10
+      p: 0.3
+
+    gaussian_blur:
+      enabled: true
+      blur_limit_min: 3
+      blur_limit_max: 5
+      p: 0.2
+
+    gauss_noise:
+      enabled: true
+      var_limit_min: 5.0
+      var_limit_max: 30.0
+      p: 0.2
+
+    random_shadow:
+      enabled: true
+      p: 0.2                 # useful for outdoor/robot lighting conditions
+
+  normalize:
+    mean: [0.485, 0.456, 0.406]   # ImageNet stats (Swin pretrained)
+    std:  [0.229, 0.224, 0.225]
+
+  val:
+    # Validation: only resize + normalize, no random transforms
+    resize_only: true
+
+# -----------------------------------------------------------------------------
+# MODEL
+# -----------------------------------------------------------------------------
+model:
+  architecture: mask2former
+  backbone: swin_tiny          # swin_tiny | swin_small | swin_base
+  pretrained: true             # load ImageNet/COCO pretrained weights
+  num_classes: 1               # set to your number of classes from Roboflow
+
+  # Mask2Former transformer decoder settings
+  num_queries: 100             # number of instance queries
+  hidden_dim: 256
+
+  checkpoint_dir: checkpoints/
+
+# -----------------------------------------------------------------------------
+# GRADUAL FREEZING — 3 PHASES
+# -----------------------------------------------------------------------------
+# Architecture layers:
+#   model.backbone                       ← Swin Transformer
+#   model.sem_seg_head.pixel_decoder     ← Multi-Scale Deformable Attention FPN
+#   model.sem_seg_head.predictor         ← Transformer Decoder
+# -----------------------------------------------------------------------------
+freezing:
+  phase1:
+    start_epoch: 0
+    end_epoch:   15
+    frozen_layers:
+      - backbone
+      - pixel_decoder
+    trainable_layers:
+      - transformer_decoder
+    description: "Transformer decoder only — learns task-specific instance queries fast"
+
+  phase2:
+    start_epoch: 15
+    end_epoch:   30
+    frozen_layers:
+      - backbone
+    trainable_layers:
+      - pixel_decoder
+      - transformer_decoder
+    description: "Pixel decoder unfreezes — adapts feature pyramid to your data"
+
+  phase3:
+    start_epoch: 30
+    end_epoch:   50
+    frozen_layers: []          # nothing frozen
+    trainable_layers:
+      - backbone
+      - pixel_decoder
+      - transformer_decoder
+    description: "Full fine-tune — end-to-end low-LR fine-tuning"
+
+# -----------------------------------------------------------------------------
+# LEARNING RATE PER PHASE
+# -----------------------------------------------------------------------------
+learning_rate:
+  phase1: 1.0e-4               # high — only small decoder trains
+  phase2: 5.0e-5               # medium — pixel decoder added
+  phase3: 1.0e-5               # low — full fine-tune, avoid forgetting
+
+  weight_decay: 1.0e-4         # AdamW weight decay (all phases)
+  grad_clip_norm: 0.1          # gradient clipping max norm
+
+# -----------------------------------------------------------------------------
+# COSINE ANNEALING WARM RESTARTS
+# -----------------------------------------------------------------------------
+# LR decays from base to eta_min over T_0 epochs, then restarts.
+# Each restart period multiplies by T_mult: 10 → 20 → 40 → ...
+#
+# LR curve (per phase, resets on phase transition):
+#   |\        /\          /\
+#   | \      /  \        /  \
+#   |  \    /    \      /    \
+#   |   \  /      \    /      \
+#   |    \/        \  /        \
+#   └────────────────────────── epochs
+#       0   T_0  2*T_0   4*T_0
+# -----------------------------------------------------------------------------
+scheduler:
+  type: CosineAnnealingWarmRestarts
+  T_0: 10                      # restart every 10 epochs initially
+  T_mult: 2                    # double period after each restart: 10, 20, 40
+  eta_min: 1.0e-6              # minimum LR floor
+  reset_on_phase_change: true  # restart scheduler when phase transitions
+
+# -----------------------------------------------------------------------------
+# TRAINING
+# -----------------------------------------------------------------------------
+training:
+  total_epochs: 50             # must match freezing.phase3.end_epoch
+  seed: 42
+  mixed_precision: true        # torch.cuda.amp — faster on Colab T4/A100
+  compile_model: false         # torch.compile() — set true for extra speed (PyTorch 2.0+)
+
+  # Checkpoint saving
+  save_best_only: true         # only save when val_map improves
+  save_phase_end: true         # also save checkpoint at end of each phase
+  checkpoint_metric: val_map   # metric to track for best model
+
+  # Logging frequency
+  log_every_n_batches: 10      # print loss every N batches within epoch
+
+# -----------------------------------------------------------------------------
+# EVALUATION
+# -----------------------------------------------------------------------------
+evaluation:
+  iou_threshold: 0.5           # COCO standard
+  score_threshold: 0.5         # minimum confidence to count prediction
+  eval_every_n_epochs: 1       # run val loop every N epochs
+
+# -----------------------------------------------------------------------------
+# ONNX EXPORT
+# -----------------------------------------------------------------------------
+onnx:
+  opset_version: 17
+  input_size: 512              # must match data.dataloader.img_size
+  dynamic_batch: true          # allow variable batch size at inference
+  do_constant_folding: true    # fold constants at export for smaller model
+
+  output:
+    fp32: checkpoints/mask2former_fp32.onnx
+    int8: checkpoints/mask2former_int8.onnx
+
+  quantization:
+    type: static               # static (needs calibration) vs dynamic
+    activation_type: QInt8
+    weight_type: QInt8
+    quant_format: QOperator    # full INT8 operators
+    optimize_model: true
+
+# -----------------------------------------------------------------------------
+# SERVING
+# -----------------------------------------------------------------------------
+serving:
+  host: 0.0.0.0
+  port: 8000
+  model_file: mask2former_int8.onnx   # which ONNX model to load
+  conf_threshold: 0.5
+  img_size: 512                        # must match onnx.input_size
+
+# -----------------------------------------------------------------------------
+# MONITORING
+# -----------------------------------------------------------------------------
+monitoring:
+  drift_check_hours: 6         # run Evidently drift report every N hours
+  min_samples_for_drift: 10    # minimum predictions before running drift check
+  alert_on_drift: true
+
+# -----------------------------------------------------------------------------
+# ROS2
+# -----------------------------------------------------------------------------
+ros2:
+  input_topic:  /camera/image_raw
+  output_topic: /perception/instance_masks
+  publish_viz:  true
+  conf_threshold: 0.5          # can differ from serving.conf_threshold
+  img_size: 512
+  mode: embedded               # embedded (ONNX in node) | http (FastAPI client)
+  http_server_url: http://localhost:8000

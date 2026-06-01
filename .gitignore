@@ -1,0 +1,37 @@
+# Secrets — never commit
+.env
+
+# Virtual environment
+.venv/
+venv/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+
+# Model artifacts (tracked by DVC instead)
+checkpoints/*.pth
+checkpoints/*.onnx
+
+# DVC cache
+.dvc/cache/
+.dvc/tmp/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# MLflow local runs
+mlruns/
+mlflow.db
+
+# Reports
+reports/
+
+# OS
+.DS_Store
+Thumbs.db
