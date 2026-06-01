@@ -3,267 +3,234 @@
 ## Overview
 
 ```
-Roboflow (download COCO format)
-  ↓
-FiftyOne (visual QA, filter bad samples)
+Roboflow (download COCO segmentation format)
   ↓
 DVC (version control for data)
   ↓
-Google Drive 200GB (GNOME mounted, remote storage)
+Google Drive 200GB via rclone FUSE mount (remote storage)
+  ↓
+FiftyOne (visual QA, filter bad samples)  ← next step
 ```
 
 ---
 
-## 1. Environment Setup (local venv)
+## What We Actually Did (Build Log)
+
+### Step 1 — Create venv and install dependencies
 
 ```bash
 cd ~/Desktop/mask2former
 python3 -m venv .venv
 source .venv/bin/activate
 
-pip install roboflow fiftyone dvc pymongo
+pip install dvc python-dotenv roboflow fiftyone albumentations pycocotools "dvc[gdrive]"
 ```
 
 ---
 
-## 2. Project & DVC Initialization
+### Step 2 — Initialize Git + GitHub repo + DVC
 
 ```bash
+# Configure git identity
+git config user.name "Serkan"
+git config user.email "srnortw@users.noreply.github.com"
+
+# Init git and make first commit
 git init
+git add .gitignore config.yaml docs/ src/
+git commit -m "init: project structure, config, pipeline docs"
+
+# Create private GitHub repo and push (using gh CLI — already authenticated)
+gh repo create mask2former --private --source=. --remote=origin --push
+
+# Init DVC
 dvc init
-git add .dvc .gitignore
-git commit -m "init: dvc setup"
 ```
 
-### Set Google Drive as DVC remote
-
-Google Drive is already mounted via GNOME at:
-```
-/run/user/1000/gvfs/google-drive:host=gmail.com,user=srnortw/
-```
-
-```bash
-# Create a folder on Drive for this project first (via Files app or Drive web)
-# Then point DVC to it:
-DRIVE_PATH="/run/user/1000/gvfs/google-drive:host=gmail.com,user=srnortw/mask2former-mlops"
-dvc remote add -d gdrive "$DRIVE_PATH"
-dvc remote modify gdrive type local   # GNOME mount looks like local filesystem to DVC
-
-git add .dvc/config
-git commit -m "config: add google drive dvc remote"
-```
-
-> **Note:** This path is only available while logged into GNOME desktop. In Colab, use `drive.mount('/content/drive')` and set the DVC remote to the equivalent path.
+GitHub repo: https://github.com/srnortw/mask2former
 
 ---
 
-## 3. Dataset Download from Roboflow
+### Step 3 — Download Dataset from Roboflow
 
-```python
-# src/data/roboflow_download.py
-from roboflow import Roboflow
-import os
+Project: **Lane Detection (Segmentation)**
+- Workspace: `test-mfeql`
+- Project slug: `lane-detection-segmentation-edyqp-fibkz`
+- Version: `1`
+- Format: `coco-segmentation`
 
-def download_dataset(api_key: str, workspace: str, project: str, version: int):
-    rf = Roboflow(api_key=api_key)
-    proj = rf.workspace(workspace).project(project)
-    dataset = proj.version(version).download(
-        "coco-segmentation",        # COCO instance segmentation format
-        location="data/raw"
-    )
-    return dataset.location
+> **Important:** You must generate at least one version in Roboflow before downloading.
+> Go to your project → click **"Generate New Version"** → skip augmentations → Generate.
 
-if __name__ == "__main__":
-    download_dataset(
-        api_key=os.environ["ROBOFLOW_API_KEY"],
-        workspace="your-workspace",
-        project="your-project",
-        version=1
-    )
+```bash
+source .venv/bin/activate
+python src/data/roboflow_download.py
 ```
 
-Expected output structure after download:
+The script reads all values from `.env` via `config_loader.py` — no hardcoded credentials.
+
+**Dataset downloaded to:** `data/raw/`
+
 ```
 data/raw/
 ├── train/
-│   ├── images/           # .jpg files
+│   ├── *.jpg  (1141 images)
 │   └── _annotations.coco.json
 ├── valid/
-│   ├── images/
+│   ├── *.jpg  (318 images)
 │   └── _annotations.coco.json
 └── test/
-    ├── images/
+    ├── *.jpg  (151 images)
     └── _annotations.coco.json
 ```
 
----
+**Verified dataset stats:**
 
-## 4. FiftyOne — Visual QA & Filtering
+| Split | Images | Annotations |
+|---|---|---|
+| Train | 1,141 | 3,026 |
+| Valid | 318 | 853 |
+| Test | 151 | 385 |
+| **Total** | **1,610** | **4,264** |
 
-FiftyOne launches a browser UI to inspect every image and annotation.
+**Classes (5):**
+- `Lane-Markings`
+- `Left Boundary -Dashed-`
+- `Left Boundary -Solid-`
+- `Right Boundary -Dashed-`
+- `Right Boundary -Solid-`
 
-```python
-# src/data/fiftyone_filter.py
-import fiftyone as fo
-import fiftyone.utils.coco as fouc
-
-def load_and_inspect(split: str = "train"):
-    dataset = fo.Dataset.from_dir(
-        dataset_type=fo.types.COCODetectionDataset,
-        data_path=f"data/raw/{split}/images",
-        labels_path=f"data/raw/{split}/_annotations.coco.json",
-        name=f"mask2former_{split}",
-        label_types=["segmentations"],
-    )
-    session = fo.launch_app(dataset)
-    return session, dataset
-
-
-def export_filtered(dataset, output_dir: str):
-    """Export filtered samples back to COCO format."""
-    dataset.export(
-        export_dir=output_dir,
-        dataset_type=fo.types.COCODetectionDataset,
-        label_field="ground_truth",
-    )
-```
-
-### What to look for in FiftyOne UI
-
-- Incorrect or missing polygon annotations
-- Images with no labels (background only — keep a small %)
-- Severely blurry or corrupted images
-- Wrong class labels
-- Annotations that don't align with object boundaries
-
-### Tag and delete bad samples
-
-```python
-# In FiftyOne UI: tag bad samples as "delete"
-# Then in code:
-bad_samples = dataset.match_tags("delete")
-dataset.remove_samples(bad_samples)
-print(f"Remaining: {len(dataset)} samples")
-```
+`config.yaml` updated: `model.num_classes: 5`
 
 ---
 
-## 5. Version Data with DVC
+### Step 4 — Google Drive Setup with rclone
+
+**Why rclone instead of GNOME mount:**
+GNOME GVFS mount auto-disconnects during bulk file transfers and DVC's config parser misreads the comma in the GVFS path (`google-drive:host=gmail.com,user=srnortw`). rclone stays connected and is designed for bulk transfers.
+
+**Install rclone:**
+```bash
+sudo apt install rclone
+```
+
+**Configure rclone with Google Drive (one-time setup):**
+```bash
+rclone config create gdrive drive scope=drive
+# Browser opens automatically → sign in → allow access
+```
+
+**Verify connection:**
+```bash
+rclone lsd gdrive:
+# Should show your Drive folders including mask2former-mlops
+```
+
+**Mount Google Drive as FUSE filesystem:**
+```bash
+mkdir -p ~/rclone-gdrive
+rclone mount gdrive:mask2former-mlops ~/rclone-gdrive --daemon --vfs-cache-mode writes
+```
+
+> Run this mount command each time before `dvc push/pull`.
+> Check if already mounted: `ls ~/rclone-gdrive`
+
+---
+
+### Step 5 — DVC Remote + Push Data to Drive
 
 ```bash
-mkdir -p data/raw data/processed data/calibration
+# Set rclone FUSE mount as DVC remote
+dvc remote add -d gdrive "$HOME/rclone-gdrive"
 
-# After downloading and filtering:
+# Version the raw dataset
 dvc add data/raw
-dvc add data/processed
 
-git add data/raw.dvc data/processed.dvc data/.gitignore
-git commit -m "data: add raw and filtered dataset v1"
-
-# Push data to Google Drive
+# Push 1617 files to Google Drive
 dvc push
+# Output: 1617 files pushed ✅
 ```
 
-> `.dvc` files are small metadata files tracked by git.
-> Actual data lives on Google Drive.
-
-### Pull data on a new machine (e.g. Colab)
-
+**Commit DVC metadata to git:**
 ```bash
-# In Colab:
+git add data/raw.dvc data/.gitignore .dvc/config .dvc/.gitignore .dvcignore
+git commit -m "feat: data pipeline — roboflow download, DVC tracking, rclone Drive remote"
+git push
+```
+
+> DVC `.dvc` files are tiny metadata files (~1KB) that track the dataset version.
+> Actual image files live on Google Drive — never in git.
+
+---
+
+### Pull Data on a New Machine (e.g. Colab)
+
+```python
+# In Colab
 from google.colab import drive
 drive.mount('/content/drive')
 
-!git clone https://github.com/your-user/mask2former.git
+!git clone https://github.com/srnortw/mask2former.git
 %cd mask2former
+!pip install dvc
 
-# Override remote to point to Colab Drive mount
-!dvc remote modify gdrive url "/content/drive/MyDrive/mask2former-mlops"
+# Point DVC to Colab's Drive mount
+!dvc remote add -d -f gdrive "/content/drive/MyDrive/mask2former-mlops"
 !dvc pull
 ```
 
 ---
 
-## 6. Calibration Data for INT8 Quantization
+## Next Step — FiftyOne Visual QA
 
-Select ~200 representative images from the training set for ONNX INT8 calibration:
-
-```python
-# src/data/prepare_calibration.py
-import shutil, random, os
-
-def prepare_calibration(src_dir: str, dst_dir: str, n: int = 200):
-    os.makedirs(dst_dir, exist_ok=True)
-    images = [f for f in os.listdir(src_dir) if f.endswith(('.jpg', '.png'))]
-    selected = random.sample(images, min(n, len(images)))
-    for img in selected:
-        shutil.copy(os.path.join(src_dir, img), os.path.join(dst_dir, img))
-    print(f"Calibration set: {len(selected)} images → {dst_dir}")
-```
+Before training, launch FiftyOne to inspect annotations:
 
 ```bash
-dvc add data/calibration
-git add data/calibration.dvc
-git commit -m "data: add calibration set for int8 quantization"
-dvc push
+source .venv/bin/activate
+python src/data/fiftyone_filter.py
+# Opens browser UI at http://localhost:5151
 ```
 
----
+**What to look for:**
+- Annotations not aligned with lane boundaries
+- Images with missing labels
+- Blurry or corrupted frames
+- Wrong class assigned to a lane
 
-## 7. DVC Pipeline Stage (dvc.yaml)
-
-```yaml
-# dvc.yaml
-stages:
-  download_data:
-    cmd: python src/data/roboflow_download.py
-    deps:
-      - src/data/roboflow_download.py
-    outs:
-      - data/raw
-
-  filter_data:
-    cmd: python src/data/fiftyone_filter.py
-    deps:
-      - src/data/fiftyone_filter.py
-      - data/raw
-    outs:
-      - data/processed
-
-  prepare_calibration:
-    cmd: python src/data/prepare_calibration.py
-    deps:
-      - src/data/prepare_calibration.py
-      - data/processed
-    outs:
-      - data/calibration
-```
-
----
-
-## 8. Dataset Stats
-
-After downloading from Roboflow:
-
+**Tag bad samples as `delete` in UI, then export filtered dataset:**
 ```python
-from pycocotools.coco import COCO
+# After review in browser:
+export_filtered(dataset, "train", cfg)
+export_filtered(dataset, "valid", cfg)
+# → saves to data/processed/
 
-coco = COCO("data/raw/train/_annotations.coco.json")
-print(f"Images:      {len(coco.imgs)}")
-print(f"Annotations: {len(coco.anns)}")
-print(f"Categories:  {[c['name'] for c in coco.loadCats(coco.getCatIds())]}")
+# Then version processed data
+# dvc add data/processed && dvc push
 ```
+
+---
+
+## Source Files Written
+
+| File | Purpose |
+|---|---|
+| `src/data/roboflow_download.py` | Download dataset from Roboflow using config.yaml values |
+| `src/data/dataset.py` | PyTorch Dataset + DataLoader builder |
+| `src/data/transforms.py` | Albumentations train/val pipelines (driven by config.yaml) |
+| `src/data/fiftyone_filter.py` | FiftyOne QA, filtering, calibration set prep |
+| `src/config_loader.py` | Loads `.env` + `config.yaml` → dot-accessible namespace |
 
 ---
 
 ## Summary
 
-| Step | Tool | Output |
+| Step | Tool | Status |
 |---|---|---|
-| Download | Roboflow SDK | `data/raw/` COCO JSON |
-| Visual QA | FiftyOne | `data/processed/` cleaned |
-| Calibration prep | Python | `data/calibration/` 200 imgs |
-| Version | DVC | `.dvc` files in git |
-| Storage | Google Drive (GNOME) | Full data on Drive |
+| Virtual environment | Python venv | ✅ done |
+| Code repository | GitHub (`srnortw/mask2former`) | ✅ done |
+| Dataset download | Roboflow SDK → `data/raw/` | ✅ done |
+| Data versioning | DVC | ✅ done |
+| Drive storage | rclone → Google Drive 200GB | ✅ 1617 files pushed |
+| Visual QA | FiftyOne | ⏳ next step |
 
 **Next:** [02 — Data Pipeline](02_data_pipeline.md)
