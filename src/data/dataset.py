@@ -25,7 +25,12 @@ class Mask2FormerDataset(Dataset):
 
         img_path = os.path.join(self.img_dir, img_info["file_name"])
         image = cv2.imread(img_path)
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        if image is None:
+            # fallback: return black image if file is missing/corrupt
+            h = w = self.img_dir and 512
+            image = np.zeros((512, 512, 3), dtype=np.uint8)
+        else:
+            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
         ann_ids = self.coco.getAnnIds(imgIds=img_id)
         anns = self.coco.loadAnns(ann_ids)
@@ -76,17 +81,35 @@ def collate_fn(batch):
     return torch.stack(images, dim=0), list(targets)
 
 
-def build_dataloaders(cfg):
+def _resolve_data_root(cfg):
+    """Use processed data if available, fall back to raw."""
     root = cfg.data.processed_dir
+    ann = os.path.join(root, cfg.data.train_subdir, cfg.data.ann_filename)
+    if not os.path.exists(ann):
+        root = cfg.data.raw_dir
+        print("data/processed not found — using data/raw (run FiftyOne filter first)")
+    return root
+
+
+def _img_dir(root, split):
+    """Roboflow puts images directly in split folder, not in split/images/."""
+    images_subdir = os.path.join(root, split, "images")
+    if os.path.isdir(images_subdir):
+        return images_subdir
+    return os.path.join(root, split)
+
+
+def build_dataloaders(cfg):
+    root = _resolve_data_root(cfg)
     dl = cfg.data.dataloader
 
     train_dataset = Mask2FormerDataset(
-        img_dir=os.path.join(root, cfg.data.train_subdir, "images"),
+        img_dir=_img_dir(root, cfg.data.train_subdir),
         ann_file=os.path.join(root, cfg.data.train_subdir, cfg.data.ann_filename),
         transforms=get_train_transforms(cfg),
     )
     val_dataset = Mask2FormerDataset(
-        img_dir=os.path.join(root, cfg.data.val_subdir, "images"),
+        img_dir=_img_dir(root, cfg.data.val_subdir),
         ann_file=os.path.join(root, cfg.data.val_subdir, cfg.data.ann_filename),
         transforms=get_val_transforms(cfg),
     )

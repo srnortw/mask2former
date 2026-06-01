@@ -11,11 +11,10 @@ def get_train_transforms(cfg):
 
     if aug.train.shift_scale_rotate.enabled:
         s = aug.train.shift_scale_rotate
-        t.append(A.ShiftScaleRotate(
-            shift_limit=s.shift_limit,
-            scale_limit=s.scale_limit,
-            rotate_limit=s.rotate_limit,
-            border_mode=s.border_mode,
+        t.append(A.Affine(
+            translate_percent={"x": (-s.shift_limit, s.shift_limit), "y": (-s.shift_limit, s.shift_limit)},
+            scale=(1 - s.scale_limit, 1 + s.scale_limit),
+            rotate=(-s.rotate_limit, s.rotate_limit),
             p=s.p,
         ))
 
@@ -64,7 +63,7 @@ def get_train_transforms(cfg):
     if aug.train.gauss_noise.enabled:
         gn = aug.train.gauss_noise
         t.append(A.GaussNoise(
-            var_limit=(gn.var_limit_min, gn.var_limit_max),
+            std_range=(gn.var_limit_min ** 0.5 / 255, gn.var_limit_max ** 0.5 / 255),
             p=gn.p,
         ))
 

@@ -1,5 +1,40 @@
 # 02 — Data Pipeline
 
+## What We Actually Did (Build Log)
+
+### Fixes Applied During Build
+
+**1. `ShiftScaleRotate` deprecated → replaced with `A.Affine`**
+Albumentations deprecated `ShiftScaleRotate` in favour of the more flexible `Affine` transform.
+
+**2. `GaussNoise var_limit` → replaced with `std_range`**
+New Albumentations API uses `std_range` (normalized 0-1) instead of `var_limit`.
+
+**3. Roboflow flat structure — no `images/` subfolder**
+Roboflow downloads images directly into `data/raw/train/` not `data/raw/train/images/`.
+Added `_img_dir()` helper that auto-detects the correct path.
+
+**4. `data/processed` fallback**
+`build_dataloaders()` now falls back to `data/raw` automatically if FiftyOne filtering hasn't been run yet.
+
+**5. Graceful handling of unreadable images**
+Added None check for `cv2.imread()` — returns a black image instead of crashing.
+
+### Verified Results
+
+```
+Train: 1141 samples | 285 batches
+Val:   318 samples  | 80 batches
+
+Batch shape:         torch.Size([4, 3, 512, 512])
+Batch dtype:         torch.float32
+Sample masks shape:  torch.Size([2, 512, 512])
+Pixel value range:   [-2.118, 2.640]  (ImageNet normalized)
+Different aug per call: True ✅
+```
+
+---
+
 ## Overview
 
 PyTorch data pipeline that mirrors tf.data behavior:
