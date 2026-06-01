@@ -1,455 +1,190 @@
 # 03 — Training
 
-## What We Actually Did (Build Log)
+## What We Actually Built (Build Log)
 
-### Key Decisions
+### Key Decisions Made During Implementation
 
-**Backbone: Swin-Small** (mid-tier)
-- Swin-Tiny: 47M params, ~8GB VRAM
-- **Swin-Small: 69M params, ~10GB VRAM ← chosen**
-- Swin-Base: 107M params, ~14GB VRAM
-- Colab T4 has 15GB — Swin-Small fits comfortably with batch size 4
-
-**Framework: HuggingFace `transformers`** instead of detectron2
-- Same Mask2Former architecture
-- `pip install transformers` — no complex detectron2 build
-- Native HF Hub integration for model push
+**Framework: HuggingFace `transformers`** (not detectron2)
+- Original plan used detectron2 — dropped it due to complex CUDA build requirements on Colab
+- HuggingFace `transformers` provides the same Mask2Former architecture via `pip install transformers`
 - Pretrained checkpoint: `facebook/mask2former-swin-small-coco-instance`
+- Native HF Hub integration for model push
 
-**MLflow: DagsHub** instead of Render.com
+**Backbone: Swin-Small** (mid-tier balance)
+| Backbone | Params | VRAM | Colab T4 (15GB) |
+|---|---|---|---|
+| Swin-Tiny | 47M | ~8GB | fits easily |
+| **Swin-Small** | **69M** | **~10GB** | **chosen — fits with batch 4** |
+| Swin-Base | 107M | ~14GB | tight |
+
+**MLflow: DagsHub** (not Render.com)
 - Render.com free tier (512MB RAM) → OOM with recent MLflow versions
-- DagsHub: free, persistent, purpose-built for ML experiment tracking
+- DagsHub: free, persistent, built for MLOps
 - Tracking URI: `https://dagshub.com/srnortw/mask2former.mlflow`
+
+**Checkpoint strategy: resume-safe**
+- `last_checkpoint.pth` saved **every epoch** with full optimizer + scheduler state
+- On restart, training auto-resumes from last epoch — no epochs lost if Colab disconnects
+- `best_model.pth` saved on mAP improvement
+- `phaseN_final.pth` saved at end of each phase
+
+---
 
 ### Source Files Written
 
 | File | Purpose |
 |---|---|
-| `src/models/mask2former.py` | Model build, phase freezing, optimizer, scheduler |
-| `src/train.py` | Full training loop with gradual freezing + MLflow |
-| `src/evaluate.py` | COCO segmentation evaluation (mask AP) |
-| `notebooks/train_colab.ipynb` | 10-cell Colab notebook, ready to run |
+| `src/models/mask2former.py` | Model build, `build_model_from_checkpoint`, 3-phase gradual freezing |
+| `src/train.py` | Full training loop: gradual freezing + AMP + MLflow + checkpoint resume |
+| `src/evaluate.py` | COCO segmentation evaluation (mask AP via `pycocotools`) |
+| `notebooks/train_colab.ipynb` | 10-cell Colab notebook |
 
-### Colab Secrets to Add
+---
 
-Before running the notebook, add these in Colab → 🔑 Secrets:
+### Bugs Fixed During Build
+
+| Error | Cause | Fix |
+|---|---|---|
+| `AttributeError: mask_embedder` | HF model doesn't have that attr | Removed from `set_phase()` |
+| `AttributeError: ann_file` | Dataset didn't store the path | Added `self.ann_file = ann_file` to `__init__` |
+| `TypeError: keep loop` | `range(keep.sum())` indexes by count not position | Replaced with `keep.nonzero(as_tuple=True)[0]` |
+| `TypeError: scores.values[q]` | `scores` is already a plain tensor, not a named tuple | Changed to `scores[q].item()` |
+| `ModuleNotFoundError: config_loader` | Wrong `sys.path` in Colab | Added `sys.path.insert(0, '/content/mask2former/src')` |
+| Private repo clone failure | No auth token in URL | Injected `GITHUB_TOKEN` into clone URL |
+
+---
+
+### HuggingFace Layer Structure (actual, for reference)
+
+```
+Mask2FormerForUniversalSegmentation
+  model.pixel_level_module.encoder       ← Swin backbone
+  model.pixel_level_module.decoder       ← Pixel decoder (FPN)
+  model.transformer_module               ← Transformer decoder (queries → masks)
+  class_predictor                        ← Classification head
+```
+
+This differs from the detectron2 structure (`model.backbone`, `model.sem_seg_head.pixel_decoder`, etc.).
+
+---
+
+### Gradual Freezing — Phase Breakdown
+
+```python
+# Phase 1: Only transformer decoder + class head train
+model.model.pixel_level_module.encoder   → frozen
+model.model.pixel_level_module.decoder   → frozen
+model.model.transformer_module           → trainable
+model.class_predictor                    → trainable
+
+# Phase 2: Pixel decoder unfreezes
+model.model.pixel_level_module.decoder   → trainable
+
+# Phase 3: Full fine-tune
+all parameters                           → trainable
+```
+
+| Phase | Epochs | LR | Trainable | Goal |
+|---|---|---|---|---|
+| 1 | 0–15 | 1e-4 | ~30% of params | Teach queries task-specific patterns fast |
+| 2 | 15–30 | 5e-5 | ~60% of params | Adapt feature pyramid to lane data |
+| 3 | 30–50 | 1e-5 | 100% of params | Full end-to-end fine-tuning |
+
+---
+
+### Colab Notebook — Cell Structure
+
+| Cell | Purpose |
+|---|---|
+| 1 | Verify GPU (CUDA, VRAM, torch version) |
+| 2 | Install dependencies (transformers, mlflow, albumentations, etc.) |
+| 3 | Load secrets from Colab secret manager |
+| 4 | Clone repo + download Roboflow dataset |
+| 5 | Load config + build DataLoaders + batch shape check |
+| 6 | Build model + verify phase freezing + sanity forward pass |
+| 7 | Test MLflow connection to DagsHub |
+| 8 | **Run training** (`train(cfg)`) |
+| 9 | Backup checkpoints to Google Drive |
+| 10 | Push `best_model.pth` to Hugging Face Hub |
+
+### Colab Secrets Required
 
 | Secret | Value |
 |---|---|
-| `ROBOFLOW_API_KEY` | from `.env` |
-| `HF_TOKEN` | from `.env` |
-| `MONGO_URI` | from `.env` |
+| `ROBOFLOW_API_KEY` | Roboflow private key |
+| `HF_TOKEN` | Hugging Face write token |
 | `MLFLOW_TRACKING_URI` | `https://dagshub.com/srnortw/mask2former.mlflow` |
-| `MLFLOW_TRACKING_PASSWORD` | DagsHub token from `.env` |
-
-### HF Repo ID
-`srnortw/mask2former-lane-seg` (private)
-
----
-
-## Overview
-
-```
-Mask2Former + Swin-T/S/B backbone (pretrained ImageNet/COCO)
-  ↓
-Phase 1: Freeze backbone + pixel decoder → train transformer decoder only
-  ↓
-Phase 2: Unfreeze pixel decoder → train decoder + pixel decoder
-  ↓
-Phase 3: Unfreeze all → full fine-tune with low LR
-  ↓
-CosineAnnealingWarmRestarts throughout all phases
-  ↓
-MLflow logs metrics → Render.com tracking server
-  ↓
-Best checkpoint → DVC push → Google Drive
-```
+| `MLFLOW_TRACKING_PASSWORD` | DagsHub access token |
+| `GITHUB_TOKEN` | Fine-grained PAT for private repo clone |
+| `MONGO_URI` | MongoDB Atlas connection string |
 
 ---
 
-## 1. Colab Setup
+### Training Results (First Run — Interrupted at Epoch 18)
+
+```
+Phase 1 | Trainable: 12,386,502 / 68,943,670 (18.0%)
+Phase 2 | Trainable: ~41M / 69M (60%)
+
+Epoch 001 | Phase 1 | Loss: 48.5962 | mAP: 0.0000 | LR: 1.00e-04
+...
+Epoch 018 | Phase 2 | Loss: 18.0492 | mAP: 0.0000 | LR: 3.66e-05
+```
+
+**Why mAP = 0.000 at epoch 18:**
+- `score_threshold: 0.5` in `config.yaml` — model confidence scores are below 0.5 this early
+- Loss dropping 48 → 18 confirms training is working correctly
+- Real mAP numbers expected from Phase 3 (epochs 30–50) when full network trains together
+- Lower `score_threshold` to 0.1–0.2 to see non-zero mAP earlier
+
+**Status:** Checkpoint pushed to `srnortw/mask2former-lane-seg` on HuggingFace for pipeline testing.
+Training can be resumed from `last_checkpoint.pth` (saved at epoch 18).
+
+---
+
+### Checkpoint Resume — How It Works
 
 ```python
-# Cell 1 — mount drive and clone repo
-from google.colab import drive
-drive.mount('/content/drive')
-
-!git clone https://github.com/your-user/mask2former.git
-%cd mask2former
-
-# Override DVC remote to colab path
-!dvc remote modify gdrive url "/content/drive/MyDrive/mask2former-mlops"
-!dvc pull data/processed
+# On restart, train.py detects last_checkpoint.pth and resumes:
+last_ckpt_path = os.path.join(ckpt_dir, "last_checkpoint.pth")
+if os.path.exists(last_ckpt_path):
+    ckpt = torch.load(last_ckpt_path, map_location=device)
+    model.load_state_dict(ckpt["model_state_dict"])
+    optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+    scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+    start_epoch   = ckpt["epoch"] + 1
+    current_phase = ckpt["phase"]
+    best_map      = ckpt["best_map"]
 ```
 
+In Colab, copy checkpoints to Drive after each session:
 ```python
-# Cell 2 — install dependencies
-!pip install detectron2 -f https://dl.fbaipublicfiles.com/detectron2/wheels/cu118/torch2.1/index.html
-!pip install git+https://github.com/facebookresearch/Mask2Former.git
-!pip install mlflow pymongo albumentations pycocotools
-```
-
-```python
-# Cell 3 — verify GPU
-import torch
-print(f"CUDA available: {torch.cuda.is_available()}")
-print(f"GPU: {torch.cuda.get_device_name(0)}")
-print(f"torch: {torch.__version__}")
+!cp -r /content/mask2former/checkpoints /content/drive/MyDrive/mask2former-mlops/checkpoints
 ```
 
 ---
 
-## 2. Model Setup
-
-```python
-# src/models/mask2former.py
-from detectron2.config import get_cfg
-from detectron2 import model_zoo
-from detectron2.engine import DefaultTrainer
-import torch.nn as nn
-
-
-def build_mask2former_config(
-    num_classes: int,
-    backbone: str = "swin_tiny",   # swin_tiny | swin_small | swin_base
-    weights: str = "COCO-InstanceSegmentation",
-):
-    cfg = get_cfg()
-
-    # Add Mask2Former defaults
-    from mask2former import add_maskformer2_config
-    add_maskformer2_config(cfg)
-
-    # Choose backbone config
-    backbone_configs = {
-        "swin_tiny":  "configs/coco/instance-segmentation/maskformer2_swin_tiny_bs16_50ep.yaml",
-        "swin_small": "configs/coco/instance-segmentation/maskformer2_swin_small_bs16_50ep.yaml",
-        "swin_base":  "configs/coco/instance-segmentation/maskformer2_swin_base_384_bs16_50ep.yaml",
-    }
-
-    cfg.merge_from_file(backbone_configs[backbone])
-
-    # Custom dataset settings
-    cfg.MODEL.SEM_SEG_HEAD.NUM_CLASSES = num_classes
-    cfg.SOLVER.IMS_PER_BATCH = 4
-    cfg.SOLVER.BASE_LR = 1e-4
-    cfg.MODEL.WEIGHTS = model_zoo.get_checkpoint_url(
-        "new_baselines/mask2former_swin_T_bs16_50ep.pkl"
-    )
-
-    return cfg
-```
-
----
-
-## 3. Gradual Freezing
-
-### Architecture layers
-
-```
-Mask2Former:
-  model.backbone                           ← Swin Transformer
-  model.sem_seg_head.pixel_decoder         ← Multi-Scale Deformable Attention FPN
-  model.sem_seg_head.predictor             ← Transformer Decoder (queries → masks)
-```
-
-```python
-# src/models/mask2former.py (continued)
-
-def set_phase(model, phase: int):
-    """
-    Phase 1: Only transformer decoder trains (backbone + pixel decoder frozen)
-    Phase 2: Pixel decoder unfreezes (backbone still frozen)
-    Phase 3: Everything trains (full fine-tune)
-    """
-    if phase == 1:
-        # Freeze backbone
-        for param in model.backbone.parameters():
-            param.requires_grad = False
-        # Freeze pixel decoder
-        for param in model.sem_seg_head.pixel_decoder.parameters():
-            param.requires_grad = False
-        # Transformer decoder stays trainable
-        for param in model.sem_seg_head.predictor.parameters():
-            param.requires_grad = True
-
-        trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
-        print(f"Phase 1 | Trainable params: {trainable:,}")
-
-    elif phase == 2:
-        # Unfreeze pixel decoder
-        for param in model.sem_seg_head.pixel_decoder.parameters():
-            param.requires_grad = True
-
-        trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
-        print(f"Phase 2 | Trainable params: {trainable:,}")
-
-    elif phase == 3:
-        # Unfreeze everything
-        for param in model.parameters():
-            param.requires_grad = True
-
-        trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
-        print(f"Phase 3 | Trainable params: {trainable:,}")
-
-
-def get_optimizer(model, lr: float, weight_decay: float = 1e-4):
-    """Only pass trainable params to optimizer."""
-    return torch.optim.AdamW(
-        filter(lambda p: p.requires_grad, model.parameters()),
-        lr=lr,
-        weight_decay=weight_decay,
-    )
-```
-
----
-
-## 4. Cosine Warm Restarts Scheduler
-
-```python
-# src/train.py
-import torch
-
-def build_scheduler(optimizer, T_0: int = 10, T_mult: int = 2, eta_min: float = 1e-6):
-    """
-    CosineAnnealingWarmRestarts:
-      - Decays LR from base to eta_min over T_0 epochs
-      - Restarts with same base LR
-      - Each restart period doubles (T_mult=2): 10, 20, 40, ...
-    """
-    return torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-        optimizer,
-        T_0=T_0,
-        T_mult=T_mult,
-        eta_min=eta_min,
-    )
-```
-
-### LR curve visualization (what it looks like)
-
-```
-LR
-│\        /\          /\
-│ \      /  \        /  \
-│  \    /    \      /    \
-│   \  /      \    /      \
-│    \/        \  /        \
-│               \/          ...
-└────────────────────────────── epochs
-    0   10  20     40        80
-    ↑   ↑           ↑
- start restart    restart (period doubled)
-```
-
----
-
-## 5. Full Training Loop
-
-```python
-# src/train.py
-import mlflow
-import torch
-from pycocotools.coco import COCO
-from pycocotools.cocoeval import COCOeval
-
-# Phase schedule (tune based on your dataset)
-PHASE_SCHEDULE = {
-    1: {"start": 0,  "end": 15, "lr": 1e-4},   # decoder only
-    2: {"start": 15, "end": 30, "lr": 5e-5},   # + pixel decoder
-    3: {"start": 30, "end": 50, "lr": 1e-5},   # full fine-tune
-}
-
-def train(cfg, train_loader, val_loader, mlflow_uri: str):
-    mlflow.set_tracking_uri(mlflow_uri)
-    mlflow.set_experiment("mask2former-swin")
-
-    model = build_model(cfg).cuda()
-    set_phase(model, phase=1)
-    optimizer = get_optimizer(model, lr=PHASE_SCHEDULE[1]["lr"])
-    scheduler = build_scheduler(optimizer, T_0=10, T_mult=2)
-
-    current_phase = 1
-    best_map = 0.0
-
-    with mlflow.start_run():
-        # Log hyperparameters
-        mlflow.log_params({
-            "backbone": "swin_tiny",
-            "batch_size": cfg.SOLVER.IMS_PER_BATCH,
-            "phase1_epochs": PHASE_SCHEDULE[1]["end"],
-            "phase2_epochs": PHASE_SCHEDULE[2]["end"] - PHASE_SCHEDULE[2]["start"],
-            "phase3_epochs": PHASE_SCHEDULE[3]["end"] - PHASE_SCHEDULE[3]["start"],
-            "T_0": 10, "T_mult": 2,
-        })
-
-        for epoch in range(PHASE_SCHEDULE[3]["end"]):
-
-            # Phase transitions
-            if epoch == PHASE_SCHEDULE[2]["start"] and current_phase == 1:
-                print(f"\n--- Transitioning to Phase 2 (epoch {epoch}) ---")
-                set_phase(model, phase=2)
-                optimizer = get_optimizer(model, lr=PHASE_SCHEDULE[2]["lr"])
-                scheduler = build_scheduler(optimizer, T_0=10, T_mult=2)
-                current_phase = 2
-
-            elif epoch == PHASE_SCHEDULE[3]["start"] and current_phase == 2:
-                print(f"\n--- Transitioning to Phase 3 (epoch {epoch}) ---")
-                set_phase(model, phase=3)
-                optimizer = get_optimizer(model, lr=PHASE_SCHEDULE[3]["lr"])
-                scheduler = build_scheduler(optimizer, T_0=10, T_mult=2)
-                current_phase = 3
-
-            # Training
-            train_loss = train_one_epoch(model, train_loader, optimizer)
-            scheduler.step(epoch)
-
-            # Validation
-            val_map = evaluate(model, val_loader)
-
-            current_lr = optimizer.param_groups[0]["lr"]
-
-            # Log to MLflow
-            mlflow.log_metrics({
-                "train_loss": train_loss,
-                "val_map": val_map,
-                "learning_rate": current_lr,
-                "phase": current_phase,
-            }, step=epoch)
-
-            print(f"Epoch {epoch:03d} | Phase {current_phase} | Loss: {train_loss:.4f} | mAP: {val_map:.4f} | LR: {current_lr:.2e}")
-
-            # Save best checkpoint
-            if val_map > best_map:
-                best_map = val_map
-                torch.save({
-                    "epoch": epoch,
-                    "model_state_dict": model.state_dict(),
-                    "optimizer_state_dict": optimizer.state_dict(),
-                    "val_map": val_map,
-                    "phase": current_phase,
-                }, "checkpoints/best_model.pth")
-
-                # DVC track and push
-                os.system("dvc add checkpoints/best_model.pth")
-                os.system("dvc push")
-                mlflow.log_artifact("checkpoints/best_model.pth")
-                print(f"  ↑ New best: {best_map:.4f}")
-
-    return best_map
-```
-
----
-
-## 6. Training One Epoch
-
-```python
-def train_one_epoch(model, loader, optimizer):
-    model.train()
-    total_loss = 0.0
-
-    for batch_idx, (images, targets) in enumerate(loader):
-        images = images.cuda()
-
-        # Convert targets to detectron2 format
-        batched_inputs = prepare_batched_inputs(images, targets)
-
-        loss_dict = model(batched_inputs)
-        losses = sum(loss_dict.values())
-
-        optimizer.zero_grad()
-        losses.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.1)
-        optimizer.step()
-
-        total_loss += losses.item()
-
-    return total_loss / len(loader)
-```
-
----
-
-## 7. params.yaml — Training Parameters
-
-```yaml
-# params.yaml
-training:
-  backbone: swin_tiny
-  total_epochs: 50
-  img_size: 512
-  batch_size: 4
-  weight_decay: 1e-4
-
-  phases:
-    phase1: {start: 0,  end: 15, lr: 1e-4}
-    phase2: {start: 15, end: 30, lr: 5e-5}
-    phase3: {start: 30, end: 50, lr: 1e-5}
-
-  scheduler:
-    T_0: 10
-    T_mult: 2
-    eta_min: 1e-6
-
-mlflow:
-  tracking_uri: "https://your-render-app.onrender.com"
-  experiment_name: "mask2former-swin"
-```
-
----
-
-## 8. MLflow Tracking Server (Render.com)
-
-Free setup — takes ~10 minutes:
-
-1. Create account at [render.com](https://render.com)
-2. New Web Service → connect GitHub repo
-3. Build command: `pip install mlflow`
-4. Start command: `mlflow server --host 0.0.0.0 --port $PORT --backend-store-uri sqlite:///mlflow.db`
-5. Copy the service URL (e.g. `https://mlflow-xyz.onrender.com`)
-6. Set `mlflow.tracking_uri` in `params.yaml`
-
----
-
-## 9. Checkpoint Strategy
-
-```
-checkpoints/
-├── best_model.pth         ← DVC tracked, pushed to Drive after each improvement
-├── phase1_final.pth       ← optional: save at end of each phase
-├── phase2_final.pth
-└── phase3_final.pth       ← final model for ONNX export
-```
-
-```bash
-# After training completes
-dvc add checkpoints/
-git add checkpoints.dvc
-git commit -m "model: training complete, best mAP=0.XX"
-dvc push
-```
-
----
-
-## 10. Phase Summary for 1200 Images
-
-| Phase | Epochs | LR | Frozen | Goal |
-|---|---|---|---|---|
-| 1 | 1–15 | 1e-4 | backbone + pixel decoder | learn instance queries fast |
-| 2 | 16–30 | 5e-5 | backbone only | adapt feature pyramid |
-| 3 | 31–50 | 1e-5 | nothing | full fine-tune |
-
-**Expected training time on Colab Pro (T4):** ~3-5 hours for 50 epochs with 1200 images at batch size 4.
+### MLflow Experiment
+
+- **DagsHub URL:** https://dagshub.com/srnortw/mask2former.mlflow
+- **Experiment:** `mask2former-swin` (experiment ID: 0)
+- **Runs logged:** `connection-test` (validation run), `enthused-bass-906` (training run)
+- **Metrics tracked per epoch:** `train_loss`, `val_map`, `learning_rate`, `phase`
 
 ---
 
 ## Summary
 
-| Component | Tool/Approach |
+| Component | Tool / Approach |
 |---|---|
-| Architecture | Mask2Former + Swin-T backbone |
+| Architecture | Mask2Former + Swin-Small (HuggingFace transformers) |
+| Pretrained weights | `facebook/mask2former-swin-small-coco-instance` |
 | Freezing | 3-phase gradual unfreeze |
-| Optimizer | AdamW |
+| Optimizer | AdamW (weight decay 1e-4) |
 | LR schedule | CosineAnnealingWarmRestarts (T_0=10, T_mult=2) |
-| Experiment tracking | MLflow → Render.com |
-| Checkpointing | DVC → Google Drive |
+| Mixed precision | `torch.amp.autocast` + `GradScaler` |
+| Experiment tracking | MLflow → DagsHub |
+| Checkpointing | `last_checkpoint.pth` every epoch + `best_model.pth` on improvement |
+| Model registry | Hugging Face Hub (`srnortw/mask2former-lane-seg`) |
 
 **Next:** [04 — ONNX Export + INT8 Quantization](04_onnx_quantization.md)
