@@ -55,7 +55,12 @@ def train_one_epoch(model, loader, optimizer, device, scaler, cfg):
     return total_loss / len(loader)
 
 
-def train(cfg=None):
+def train(cfg=None, stop_at_epoch: int = None, run_id: str = None):
+    """
+    Run training up to `stop_at_epoch` (exclusive).
+    Pass the same `run_id` across phase cells to log into one MLflow run.
+    Automatically resumes from last_checkpoint.pth if it exists.
+    """
     if cfg is None:
         cfg = load_config()
 
@@ -104,6 +109,7 @@ def train(cfg=None):
 
     best_map   = 0.0
     total_epochs = cfg.training.total_epochs
+    stop_epoch   = stop_at_epoch if stop_at_epoch is not None else total_epochs
     ckpt_dir = cfg.model.checkpoint_dir
     os.makedirs(ckpt_dir, exist_ok=True)
 
@@ -117,6 +123,9 @@ def train(cfg=None):
         start_epoch    = ckpt["epoch"] + 1
         best_map       = ckpt.get("best_map", 0.0)
         current_phase  = ckpt["phase"]
+        # Inherit run_id from checkpoint so all phases log to one MLflow run
+        if run_id is None:
+            run_id = ckpt.get("mlflow_run_id")
         set_phase(model, phase=current_phase)
         optimizer = get_optimizer(model, lr_map[current_phase], cfg.learning_rate.weight_decay)
         scheduler = build_scheduler(optimizer, cfg.scheduler.T_0, cfg.scheduler.T_mult, cfg.scheduler.eta_min)
@@ -124,7 +133,9 @@ def train(cfg=None):
         scheduler.load_state_dict(ckpt["scheduler_state_dict"])
         print(f"  Resumed at epoch {start_epoch}, phase {current_phase}, best_mAP {best_map:.4f}")
 
-    with mlflow.start_run():
+    with mlflow.start_run(run_id=run_id) as active_run:
+        run_id = active_run.info.run_id
+        print(f"MLflow run: {run_id}")
         mlflow.log_params({
             "backbone":     cfg.model.backbone,
             "num_classes":  cfg.model.num_classes,
@@ -141,7 +152,7 @@ def train(cfg=None):
             "lr_phase3":    lr_map[3],
         })
 
-        for epoch in range(start_epoch, total_epochs):
+        for epoch in range(start_epoch, stop_epoch):
 
             # Phase transitions
             if epoch == phases[2].start_epoch and current_phase == 1:
@@ -189,6 +200,7 @@ def train(cfg=None):
                 "val_map":              val_map,
                 "best_map":             best_map,
                 "phase":                current_phase,
+                "mlflow_run_id":        run_id,
             }, last_ckpt_path)
 
             # Save best checkpoint
@@ -218,8 +230,9 @@ def train(cfg=None):
                         torch.save({"epoch": epoch, "model_state_dict": model.state_dict()}, path)
                         print(f"  → Phase {phase_id} final checkpoint saved")
 
-    print(f"\nTraining complete. Best mAP: {best_map:.4f}")
-    return best_map
+    print(f"\nDone (epochs {start_epoch}–{stop_epoch-1}). Best mAP so far: {best_map:.4f}")
+    print(f"MLflow run_id: {run_id}  ← pass this to the next phase cell")
+    return best_map, run_id
 
 
 if __name__ == "__main__":
