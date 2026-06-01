@@ -52,10 +52,12 @@ class MaskCalibrationReader(CalibrationDataReader):
 
 
 def _get_calibration_dir(cfg) -> str:
-    """Use data/calibration/ if populated, else fall back to data/raw/train/."""
+    """Use data/calibration/ if it has images, else fall back to data/raw/train/."""
     cal_dir = cfg.data.calibration_dir
-    if os.path.isdir(cal_dir) and len(os.listdir(cal_dir)) > 0:
-        return cal_dir
+    if os.path.isdir(cal_dir):
+        images = [f for f in os.listdir(cal_dir) if f.lower().endswith((".jpg", ".png", ".jpeg"))]
+        if images:
+            return cal_dir
 
     raw_train = os.path.join(cfg.data.raw_dir, cfg.data.train_subdir)
     images_sub = os.path.join(raw_train, "images")
@@ -83,7 +85,6 @@ def quantize_int8(
         quant_format=QuantFormat.QOperator,
         activation_type=QuantType.QInt8,
         weight_type=QuantType.QInt8,
-        optimize_model=True,
     )
 
     fp32_mb = os.path.getsize(fp32_onnx_path) / 1e6
