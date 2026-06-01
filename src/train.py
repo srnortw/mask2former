@@ -104,7 +104,25 @@ def train(cfg=None):
 
     best_map   = 0.0
     total_epochs = cfg.training.total_epochs
-    os.makedirs(cfg.model.checkpoint_dir, exist_ok=True)
+    ckpt_dir = cfg.model.checkpoint_dir
+    os.makedirs(ckpt_dir, exist_ok=True)
+
+    # Resume from last checkpoint if it exists
+    start_epoch = 0
+    last_ckpt_path = os.path.join(ckpt_dir, "last_checkpoint.pth")
+    if os.path.exists(last_ckpt_path):
+        print(f"Resuming from {last_ckpt_path}")
+        ckpt = torch.load(last_ckpt_path, map_location=device)
+        model.load_state_dict(ckpt["model_state_dict"])
+        start_epoch    = ckpt["epoch"] + 1
+        best_map       = ckpt.get("best_map", 0.0)
+        current_phase  = ckpt["phase"]
+        set_phase(model, phase=current_phase)
+        optimizer = get_optimizer(model, lr_map[current_phase], cfg.learning_rate.weight_decay)
+        scheduler = build_scheduler(optimizer, cfg.scheduler.T_0, cfg.scheduler.T_mult, cfg.scheduler.eta_min)
+        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+        print(f"  Resumed at epoch {start_epoch}, phase {current_phase}, best_mAP {best_map:.4f}")
 
     with mlflow.start_run():
         mlflow.log_params({
@@ -123,7 +141,7 @@ def train(cfg=None):
             "lr_phase3":    lr_map[3],
         })
 
-        for epoch in range(total_epochs):
+        for epoch in range(start_epoch, total_epochs):
 
             # Phase transitions
             if epoch == phases[2].start_epoch and current_phase == 1:
@@ -161,6 +179,17 @@ def train(cfg=None):
             }, step=epoch)
 
             print(f"Epoch {epoch+1:03d} | Phase {current_phase} | Loss: {train_loss:.4f} | mAP: {val_map:.4f} | LR: {current_lr:.2e}")
+
+            # Always save last checkpoint (enables resume after interrupt)
+            torch.save({
+                "epoch":                epoch,
+                "model_state_dict":     model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "scheduler_state_dict": scheduler.state_dict(),
+                "val_map":              val_map,
+                "best_map":             best_map,
+                "phase":                current_phase,
+            }, last_ckpt_path)
 
             # Save best checkpoint
             if val_map > best_map or epoch == 0:
