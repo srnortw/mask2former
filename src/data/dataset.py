@@ -12,6 +12,7 @@ from .transforms import get_train_transforms, get_val_transforms
 class Mask2FormerDataset(Dataset):
     def __init__(self, img_dir: str, ann_file: str, transforms=None):
         self.img_dir = img_dir
+        self.ann_file = ann_file
         self.coco = COCO(ann_file)
         self.img_ids = list(self.coco.imgs.keys())
         self.transforms = transforms

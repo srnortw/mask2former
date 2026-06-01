@@ -30,19 +30,17 @@ def evaluate(model, val_loader, device, score_threshold: float = 0.5):
                 labels = pred_labels[b]
                 masks  = pred_masks[b]
 
-                keep = scores > score_threshold
-                for q in range(keep.sum()):
-                    if not keep[q]:
-                        continue
+                keep = (scores > score_threshold).nonzero(as_tuple=True)[0]
+                for q in keep:
                     mask = (masks[q] > 0.5).cpu().numpy().astype(np.uint8)
                     rle  = coco_mask.encode(np.asfortranarray(mask))
                     rle["counts"] = rle["counts"].decode("utf-8")
 
                     results.append({
-                        "image_id":    img_id,
-                        "category_id": labels[q].item() + 1,  # COCO is 1-indexed
+                        "image_id":     img_id,
+                        "category_id":  labels[q].item() + 1,  # COCO is 1-indexed
                         "segmentation": rle,
-                        "score":       scores[q].item(),
+                        "score":        scores.values[q].item(),
                     })
 
     if not results:
