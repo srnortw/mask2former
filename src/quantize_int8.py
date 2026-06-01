@@ -82,17 +82,11 @@ def quantize_int8(
 
     os.makedirs(os.path.dirname(os.path.abspath(int8_onnx_path)), exist_ok=True)
 
-    # Pre-process model to embed all initializers.
-    # skip_symbolic_shape=True avoids shape inference failures on Swin Transformer's
-    # complex window attention patterns.
+    # Pre-process model to embed all initializers and run shape inference.
+    # Required when the dynamo exporter left some weights as external tensors.
     preprocessed_path = fp32_onnx_path.replace(".onnx", "_preprocessed.onnx")
     print("  Pre-processing model for quantization...")
-    ort_shape.quant_pre_process(
-        fp32_onnx_path,
-        preprocessed_path,
-        skip_optimization=False,
-        skip_symbolic_shape=True,
-    )
+    ort_shape.quant_pre_process(fp32_onnx_path, preprocessed_path, skip_optimization=False)
 
     quantize_static(
         model_input=preprocessed_path,
