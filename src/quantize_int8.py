@@ -19,16 +19,17 @@ class MaskCalibrationReader(CalibrationDataReader):
     """
     Feeds calibration images to ONNX Runtime to compute INT8 activation ranges.
     Required for static quantization — the model sees real data distributions,
-    not just random noise.
+    not just random noise. 100-200 images is sufficient; more gives no benefit.
     """
 
-    def __init__(self, calibration_dir: str, img_size: int = 512):
+    def __init__(self, calibration_dir: str, img_size: int = 512, n_images: int = 200):
         self.img_size = img_size
-        self.images = sorted([
+        all_images = sorted([
             os.path.join(calibration_dir, f)
             for f in os.listdir(calibration_dir)
             if f.lower().endswith((".jpg", ".png", ".jpeg"))
         ])
+        self.images = all_images[:n_images]
         self.idx = 0
         self.mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
         self.std  = np.array([0.229, 0.224, 0.225], dtype=np.float32)
@@ -71,21 +72,34 @@ def quantize_int8(
     int8_onnx_path: str,
     calibration_dir: str,
     img_size: int = 512,
+    n_images: int = 200,
 ) -> str:
+    from onnxruntime.quantization import shape_inference as ort_shape
+
     print("Starting INT8 static quantization...")
     print(f"  Input:  {fp32_onnx_path}")
     print(f"  Output: {int8_onnx_path}")
 
     os.makedirs(os.path.dirname(os.path.abspath(int8_onnx_path)), exist_ok=True)
 
+    # Pre-process model to embed all initializers and run shape inference.
+    # Required when the dynamo exporter left some weights as external tensors.
+    preprocessed_path = fp32_onnx_path.replace(".onnx", "_preprocessed.onnx")
+    print("  Pre-processing model for quantization...")
+    ort_shape.quant_pre_process(fp32_onnx_path, preprocessed_path, skip_optimization=False)
+
     quantize_static(
-        model_input=fp32_onnx_path,
+        model_input=preprocessed_path,
         model_output=int8_onnx_path,
-        calibration_data_reader=MaskCalibrationReader(calibration_dir, img_size),
+        calibration_data_reader=MaskCalibrationReader(calibration_dir, img_size, n_images),
         quant_format=QuantFormat.QOperator,
         activation_type=QuantType.QInt8,
         weight_type=QuantType.QInt8,
     )
+
+    # Clean up temp file
+    if os.path.exists(preprocessed_path):
+        os.remove(preprocessed_path)
 
     fp32_mb = os.path.getsize(fp32_onnx_path) / 1e6
     int8_mb = os.path.getsize(int8_onnx_path) / 1e6
@@ -120,6 +134,7 @@ if __name__ == "__main__":
         int8_onnx_path=cfg.onnx.output.int8,
         calibration_dir=cal_dir,
         img_size=cfg.onnx.input_size,
+        n_images=cfg.data.calibration.n_images,
     )
 
     print("\nBenchmark:")

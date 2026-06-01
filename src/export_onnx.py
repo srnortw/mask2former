@@ -52,6 +52,9 @@ def export_to_onnx(
             wrapper,
             dummy_input,
             output_path,
+            dynamo=False,           # force TorchScript exporter — dynamo exporter
+                                    # produces detached initializers incompatible with
+                                    # onnxruntime static quantization
             opset_version=opset_version,
             input_names=["pixel_values"],
             output_names=["masks_queries_logits", "class_queries_logits"],
