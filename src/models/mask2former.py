@@ -65,8 +65,6 @@ def set_phase(model: Mask2FormerForUniversalSegmentation, phase: int):
             param.requires_grad = True
         for param in model.class_predictor.parameters():
             param.requires_grad = True
-        for param in model.mask_embedder.parameters():
-            param.requires_grad = True
 
     elif phase == 2:
         # Unfreeze pixel decoder
