@@ -32,7 +32,7 @@ def export_to_onnx(
     checkpoint_path: str,
     output_path: str = "checkpoints/mask2former_fp32.onnx",
     img_size: int = 512,
-    opset_version: int = 13,  # opset 13 uses TorchScript exporter, compatible with static quantization
+    opset_version: int = 16,  # opset ≤17 uses TorchScript exporter, compatible with static quantization
     device: str = "cpu",
 ) -> str:
     print(f"Loading checkpoint: {checkpoint_path}")

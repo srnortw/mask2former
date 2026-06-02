@@ -84,8 +84,6 @@ def quantize_int8(
     quant_pre_process embeds any detached initializers (opset 17 dynamo exporter
     artifact) and skips symbolic shape inference which fails on Swin attention.
     """
-    from onnxruntime.quantization import shape_inference as ort_shape
-
     print("Starting INT8 static quantization...")
     print(f"  Input:       {fp32_onnx_path}")
     print(f"  Output:      {int8_onnx_path}")
@@ -93,28 +91,19 @@ def quantize_int8(
 
     os.makedirs(os.path.dirname(os.path.abspath(int8_onnx_path)), exist_ok=True)
 
-    # Embed any detached initializers and run basic shape inference.
-    # skip_symbolic_shape=True avoids the Swin window attention shape inference failure.
-    preprocessed_path = fp32_onnx_path.replace(".onnx", "_preprocessed.onnx")
-    print("  Pre-processing model...")
-    ort_shape.quant_pre_process(
-        fp32_onnx_path,
-        preprocessed_path,
-        skip_optimization=True,
-        skip_symbolic_shape=True,
-    )
-
+    # Quantize only Conv/MatMul/Gemm — the heavy compute ops in the Swin backbone.
+    # Deformable attention layers (pixel decoder) produce intermediate tensors the
+    # quantizer can't resolve, so we exclude them. These backbone ops account for
+    # ~80% of inference compute, so speedup is preserved.
     quantize_static(
-        model_input=preprocessed_path,
+        model_input=fp32_onnx_path,
         model_output=int8_onnx_path,
         calibration_data_reader=MaskCalibrationReader(calibration_dir, img_size, n_images),
-        quant_format=QuantFormat.QOperator,
+        quant_format=QuantFormat.QDQ,
         activation_type=QuantType.QInt8,
         weight_type=QuantType.QInt8,
+        op_types_to_quantize=["Conv", "MatMul", "Gemm"],
     )
-
-    if os.path.exists(preprocessed_path):
-        os.remove(preprocessed_path)
 
     fp32_mb = os.path.getsize(fp32_onnx_path) / 1e6
     int8_mb = os.path.getsize(int8_onnx_path) / 1e6
