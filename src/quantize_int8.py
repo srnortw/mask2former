@@ -1,16 +1,60 @@
 import os
 import sys
 import time
+import cv2
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(__file__))
 
 from config_loader import load_config
-from onnxruntime.quantization import quantize_dynamic, QuantType
+from onnxruntime.quantization import (
+    quantize_static,
+    CalibrationDataReader,
+    QuantFormat,
+    QuantType,
+)
+
+
+class MaskCalibrationReader(CalibrationDataReader):
+    """
+    Feeds val/test images for activation range computation.
+    Domain-specific data gives accurate ranges for your lane detection task.
+    200 images is sufficient — more gives diminishing returns.
+    """
+
+    def __init__(self, calibration_dir: str, img_size: int = 512, n_images: int = 200):
+        self.img_size = img_size
+        all_images = sorted([
+            os.path.join(calibration_dir, f)
+            for f in os.listdir(calibration_dir)
+            if f.lower().endswith((".jpg", ".png", ".jpeg"))
+        ])
+        self.images = all_images[:n_images]
+        self.idx = 0
+        self.mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+        self.std  = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+        print(f"Calibration set: {len(self.images)} images from {calibration_dir}")
+
+    def get_next(self):
+        if self.idx >= len(self.images):
+            return None
+        img = cv2.imread(self.images[self.idx])
+        self.idx += 1
+        if img is None:
+            return self.get_next()
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        img = cv2.resize(img, (self.img_size, self.img_size))
+        img = img.astype(np.float32) / 255.0
+        img = (img - self.mean) / self.std
+        img = img.transpose(2, 0, 1)[np.newaxis]
+        return {"pixel_values": img}
 
 
 def _get_calibration_dir(cfg) -> str:
-    """Kept for future static quantization use."""
+    """
+    Prefer val set — domain-specific and not seen during training.
+    Falls back to test, then train.
+    """
     for split in [cfg.data.val_subdir, cfg.data.test_subdir, cfg.data.train_subdir]:
         split_dir = os.path.join(cfg.data.raw_dir, split)
         images_sub = os.path.join(split_dir, "images")
@@ -18,6 +62,7 @@ def _get_calibration_dir(cfg) -> str:
         if os.path.isdir(candidate):
             imgs = [f for f in os.listdir(candidate) if f.lower().endswith((".jpg", ".png", ".jpeg"))]
             if imgs:
+                print(f"Using {split} set for calibration: {len(imgs)} images")
                 return candidate
     raise FileNotFoundError("No calibration images found in raw data directory")
 
@@ -25,31 +70,38 @@ def _get_calibration_dir(cfg) -> str:
 def quantize_int8(
     fp32_onnx_path: str,
     int8_onnx_path: str,
-    **kwargs,
+    calibration_dir: str,
+    img_size: int = 512,
+    n_images: int = 200,
 ) -> str:
     """
-    Dynamic INT8 quantization.
+    Selective static INT8 quantization.
 
-    Weights → QInt8 statically (weights can be negative).
-    Activations → quantized at runtime (avoids QInt8 for post-Softmax/GELU
-    values which are in [0,1] — unsigned territory where QInt8 wastes half
-    its range on negatives, as noted in Q-ViT / FQ-ViT literature).
+    Only Conv/MatMul/Gemm ops are quantized (Swin backbone heavy compute).
+    Deformable attention layers are left in fp32 — they produce intermediate
+    tensors the ONNX quantizer cannot resolve.
 
-    TODO (future): selective static quantization with:
-        weight_type=QInt8, activation_type=QUInt8
-        op_types_to_quantize=['Conv', 'MatMul', 'Gemm']
-        calibration on val+test set (domain-specific, not seen during training)
+    Type pairing (per Q-ViT / FQ-ViT recommendation):
+      weight_type     = QInt8  — weights can be negative
+      activation_type = QUInt8 — post-Softmax/GELU values are in [0,1],
+                                 unsigned: QInt8 wastes half its range on negatives
     """
-    print("Starting INT8 dynamic quantization...")
-    print(f"  Input:  {fp32_onnx_path}")
-    print(f"  Output: {int8_onnx_path}")
+    print("Starting selective static INT8 quantization...")
+    print(f"  Input:       {fp32_onnx_path}")
+    print(f"  Output:      {int8_onnx_path}")
+    print(f"  Calibration: {calibration_dir} (max {n_images} images)")
+    print(f"  Ops:         Conv, MatMul, Gemm  (deformable attention stays fp32)")
 
     os.makedirs(os.path.dirname(os.path.abspath(int8_onnx_path)), exist_ok=True)
 
-    quantize_dynamic(
+    quantize_static(
         model_input=fp32_onnx_path,
         model_output=int8_onnx_path,
+        calibration_data_reader=MaskCalibrationReader(calibration_dir, img_size, n_images),
+        quant_format=QuantFormat.QDQ,
         weight_type=QuantType.QInt8,
+        activation_type=QuantType.QUInt8,
+        op_types_to_quantize=["Conv", "MatMul", "Gemm"],
     )
 
     fp32_mb = os.path.getsize(fp32_onnx_path) / 1e6
