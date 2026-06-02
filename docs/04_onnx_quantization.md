@@ -1,325 +1,142 @@
 # 04 — ONNX Export + INT8 Quantization
 
-## Overview
+## What We Actually Built (Build Log)
+
+### Pipeline
 
 ```
 best_model.pth (PyTorch fp32)
   ↓
-[Step 1] Export to ONNX (fp32)
+[Step 1] Export to ONNX fp32 — opset 16, TorchScript exporter, dynamo=False
   ↓
-[Step 2] Verify ONNX model (check outputs match PyTorch)
+[Step 2] Verify — max diff PyTorch vs ONNX < 0.01
   ↓
-[Step 3] Static INT8 Quantization (calibration with ~200 images)
+[Step 3] Selective static INT8 — Conv/MatMul/Gemm only, val set calibration
   ↓
-[Step 4] FiftyOne — visual comparison: fp32 vs INT8 masks
+mask2former_fp32.onnx (284 MB) + mask2former_int8.onnx (82 MB)
   ↓
-mask2former_int8.onnx  →  FastAPI serving  →  ROS2 node
-```
-
-### Why INT8 for ROS2?
-
-| Model | Size | Inference (CPU) | mAP |
-|---|---|---|---|
-| PyTorch fp32 | ~200-400 MB | slow | baseline |
-| ONNX fp32 | ~200-400 MB | ~2x faster | same |
-| ONNX INT8 | ~50-100 MB | ~3-4x faster | -1 to 3% |
-
-INT8 fits on embedded hardware (Jetson, NUC) used in ROS2 robots.
-
----
-
-## 1. Export to ONNX (fp32) — run in Colab after training
-
-```python
-# src/export_onnx.py
-import torch
-import torch.onnx
-from models.mask2former import build_model_from_checkpoint
-
-
-def export_to_onnx(
-    checkpoint_path: str,
-    output_path: str = "checkpoints/mask2former_fp32.onnx",
-    img_size: int = 512,
-    opset_version: int = 17,
-):
-    model = build_model_from_checkpoint(checkpoint_path)
-    model.eval()
-    model.cuda()
-
-    # Dummy input — same shape as training images
-    dummy_input = torch.randn(1, 3, img_size, img_size).cuda()
-
-    print("Exporting to ONNX...")
-    torch.onnx.export(
-        model,
-        dummy_input,
-        output_path,
-        opset_version=opset_version,
-        input_names=["image"],
-        output_names=["pred_masks", "pred_logits"],
-        dynamic_axes={
-            "image":       {0: "batch_size"},
-            "pred_masks":  {0: "batch_size"},
-            "pred_logits": {0: "batch_size"},
-        },
-        export_params=True,
-        do_constant_folding=True,  # optimize constants at export time
-    )
-    print(f"Exported: {output_path}")
-    return output_path
+HuggingFace Hub + Google Drive backup
 ```
 
 ---
 
-## 2. Verify ONNX Export
+### Key Decisions Made During Implementation
 
-```python
-# src/export_onnx.py (continued)
-import onnx
-import onnxruntime as ort
-import numpy as np
+**Opset 16 (not 17 or 13)**
+- Opset 13: failed — some Mask2Former ops require opset 14+
+- Opset 17+: triggers dynamo exporter → detached initializers → breaks quantizer
+- Opset 16: TorchScript exporter, all ops supported, quantization compatible
 
+**`dynamo=False` in `torch.onnx.export`**
+- Even with opset 16, newer PyTorch versions try the dynamo exporter if `onnxscript` is installed
+- `dynamo=False` forces TorchScript exporter unconditionally
 
-def verify_onnx(pytorch_model, onnx_path: str, img_size: int = 512, tolerance: float = 1e-3):
-    """Check ONNX outputs match PyTorch outputs."""
+**ONNX Wrapper for HuggingFace model**
+- HuggingFace models use dict kwargs and return dataclass objects — ONNX tracing can't handle these
+- `Mask2FormerONNXWrapper` accepts a plain tensor and returns `(masks_queries_logits, class_queries_logits)`
 
-    dummy = torch.randn(1, 3, img_size, img_size)
+**Selective static INT8 (not full static, not dynamic)**
 
-    # PyTorch output
-    pytorch_model.eval()
-    with torch.no_grad():
-        pt_out = pytorch_model(dummy.cuda())
+| Approach | Tried | Result |
+|---|---|---|
+| Full static (all ops) | ❌ | `RuntimeError: Invalid model with unknown initializers` — deformable attention produces intermediate tensors the quantizer can't resolve |
+| Dynamic INT8 | ❌ | 0.8x speedup (slower) — Colab CPU lacks Intel VNNI instructions |
+| Selective static (Conv/MatMul/Gemm) | ✅ | Works — backbone quantized, attention stays fp32 |
 
-    # ONNX output
-    session = ort.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
-    ort_out = session.run(None, {"image": dummy.numpy()})
+**Correct type pairing (per Q-ViT / FQ-ViT literature)**
+- `weight_type = QInt8` — weights can be negative
+- `activation_type = QUInt8` — post-Softmax/GELU values are in [0,1], unsigned; QInt8 wastes half its range on negatives
+- Previous incorrect attempt used QInt8 for both
 
-    # Compare
-    pt_masks = pt_out["pred_masks"].cpu().numpy()
-    ort_masks = ort_out[0]
-
-    max_diff = np.max(np.abs(pt_masks - ort_masks))
-    print(f"Max difference (PyTorch vs ONNX): {max_diff:.6f}")
-
-    if max_diff < tolerance:
-        print("ONNX export verified.")
-    else:
-        print(f"WARNING: difference {max_diff:.6f} exceeds tolerance {tolerance}")
-
-    return max_diff
-```
+**Val set as calibration data**
+- `_get_calibration_dir()` auto-selects: val → test → train
+- Val set (318 images, capped at 200) — domain-specific, not seen during weight updates
+- Better than random samples or ImageNet — activation ranges match real inference
 
 ---
 
-## 3. INT8 Static Quantization
+### Bugs Fixed During Build
 
-Static quantization requires a **calibration dataset** to compute activation ranges.
-We prepared `data/calibration/` (200 images) in step 01.
-
-```python
-# src/quantize_int8.py
-import numpy as np
-import cv2
-import onnxruntime
-from onnxruntime.quantization import (
-    quantize_static,
-    CalibrationDataReader,
-    QuantFormat,
-    QuantType,
-)
-
-
-class MaskCalibrationReader(CalibrationDataReader):
-    """Feed calibration images to compute INT8 activation ranges."""
-
-    def __init__(self, calibration_dir: str, img_size: int = 512, n_images: int = 200):
-        import os
-        self.img_size = img_size
-        self.images = [
-            os.path.join(calibration_dir, f)
-            for f in os.listdir(calibration_dir)
-            if f.endswith(('.jpg', '.png'))
-        ][:n_images]
-        self.idx = 0
-        self.mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
-        self.std  = np.array([0.229, 0.224, 0.225], dtype=np.float32)
-
-    def get_next(self):
-        if self.idx >= len(self.images):
-            return None
-
-        img = cv2.imread(self.images[self.idx])
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        img = cv2.resize(img, (self.img_size, self.img_size))
-        img = img.astype(np.float32) / 255.0
-        img = (img - self.mean) / self.std
-        img = img.transpose(2, 0, 1)           # HWC → CHW
-        img = np.expand_dims(img, axis=0)      # add batch dim
-
-        self.idx += 1
-        return {"image": img}
-
-
-def quantize_int8(
-    fp32_onnx_path: str = "checkpoints/mask2former_fp32.onnx",
-    int8_onnx_path: str = "checkpoints/mask2former_int8.onnx",
-    calibration_dir: str = "data/calibration",
-    img_size: int = 512,
-):
-    print("Starting INT8 static quantization...")
-    print(f"Input:  {fp32_onnx_path}")
-    print(f"Output: {int8_onnx_path}")
-
-    calibration_reader = MaskCalibrationReader(calibration_dir, img_size)
-
-    quantize_static(
-        model_input=fp32_onnx_path,
-        model_output=int8_onnx_path,
-        calibration_data_reader=calibration_reader,
-        quant_format=QuantFormat.QOperator,    # full INT8 operators
-        activation_type=QuantType.QInt8,
-        weight_type=QuantType.QInt8,
-        optimize_model=True,
-    )
-
-    print(f"INT8 model saved: {int8_onnx_path}")
-
-    # Report size reduction
-    import os
-    fp32_size = os.path.getsize(fp32_onnx_path) / 1e6
-    int8_size = os.path.getsize(int8_onnx_path) / 1e6
-    print(f"Size: {fp32_size:.1f} MB (fp32) → {int8_size:.1f} MB (INT8) | {fp32_size/int8_size:.1f}x smaller")
-```
+| Error | Cause | Fix |
+|---|---|---|
+| `ModuleNotFoundError: onnxscript` | New torch ONNX requires it | `pip install onnxscript` added to Cell 14 |
+| `RuntimeError: Invalid model with unknown initializers` | Dynamo exporter detaches initializers | `dynamo=False` + opset 16 |
+| `Exception: Incomplete symbolic shape inference` | Swin window attention has dynamic shapes | Skip deformable attention nodes entirely |
+| `TypeError: quantize_static() got unexpected arg optimize_model` | Removed in recent onnxruntime | Removed the argument |
+| Benchmark 0.8–0.9x speedup | Colab CPU lacks Intel VNNI | Expected — real speedup on Jetson/VNNI hardware |
 
 ---
 
-## 4. Benchmark INT8 vs fp32
+### Source Files Written
 
-```python
-# src/quantize_int8.py (continued)
-import time
-
-def benchmark(onnx_path: str, img_size: int = 512, n_runs: int = 50):
-    session = ort.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
-    dummy = np.random.randn(1, 3, img_size, img_size).astype(np.float32)
-
-    # Warmup
-    for _ in range(5):
-        session.run(None, {"image": dummy})
-
-    # Benchmark
-    start = time.perf_counter()
-    for _ in range(n_runs):
-        session.run(None, {"image": dummy})
-    elapsed = (time.perf_counter() - start) / n_runs * 1000
-
-    print(f"{onnx_path.split('/')[-1]}: {elapsed:.1f} ms/image")
-    return elapsed
-```
+| File | Purpose |
+|---|---|
+| `src/export_onnx.py` | ONNX wrapper, fp32 export, verify |
+| `src/quantize_int8.py` | `MaskCalibrationReader`, selective static INT8, benchmark |
 
 ---
 
-## 5. FiftyOne — Visual Evaluation fp32 vs INT8
+### Results
 
-Run this locally after pulling the ONNX models from Drive:
+```
+Export:
+  mask2former_fp32.onnx: 284.0 MB
+  Max diff PyTorch vs ONNX: 0.0007 (masks), 0.000003 (logits) ✅
+
+Quantization (selective static, Conv/MatMul/Gemm, QInt8/QUInt8):
+  mask2former_int8.onnx: 82.4 MB  (3.4x smaller)
+
+Benchmark on Colab CPU:
+  fp32: ~1275 ms/image
+  INT8: ~1375 ms/image  ← no speedup on x86 without Intel VNNI
+  Size: 3.4x reduction ← real benefit for storage + transfer
+```
+
+**Note on CPU speedup:** INT8 speedup only materializes on hardware with native INT8 instructions:
+
+| Hardware | Expected INT8 speedup |
+|---|---|
+| Intel with VNNI (Ice Lake+) | 2–4x |
+| ARM Cortex-A with NEON | 2–3x |
+| Jetson Nano/Xavier + TensorRT | 3–6x |
+| x86 without VNNI (Colab CPU) | ~1x (no gain) |
+
+---
+
+### Colab Cells
+
+| Cell | Purpose |
+|---|---|
+| 14 | Install `onnx onnxruntime onnxruntime-tools onnxscript` |
+| 15 | Download `best_model.pth` from HF Hub (after restart) |
+| 16 | Export fp32 ONNX (opset 16, `dynamo=False`) + verify |
+| 17 | Selective static INT8 + benchmark |
+| 18 | Push `fp32.onnx` + `int8.onnx` → HF Hub + Drive |
+
+---
+
+### How to Run Inference with the INT8 Model
 
 ```python
-# src/evaluate_onnx.py
-import fiftyone as fo
-import fiftyone.utils.coco as fouc
 import onnxruntime as ort
 import numpy as np
 import cv2
 
-
-def run_onnx_inference(session, img_path: str, img_size: int = 512):
-    img = cv2.imread(img_path)
-    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    h, w = img.shape[:2]
-    img_resized = cv2.resize(img, (img_size, img_size))
-    img_norm = (img_resized.astype(np.float32) / 255.0 - [0.485, 0.456, 0.406]) / [0.229, 0.224, 0.225]
-    inp = img_norm.transpose(2, 0, 1)[np.newaxis]
-
-    pred_masks, pred_logits = session.run(None, {"image": inp})
-    return pred_masks, pred_logits, (h, w)
-
-
-def compare_fp32_vs_int8(
-    fp32_path: str,
-    int8_path: str,
-    val_dir: str = "data/processed/valid",
-):
-    dataset = fo.Dataset("fp32_vs_int8_comparison")
-    fp32_session = ort.InferenceSession(fp32_path)
-    int8_session = ort.InferenceSession(int8_path)
-
-    import os
-    for img_file in os.listdir(f"{val_dir}/images")[:50]:  # compare on 50 images
-        img_path = f"{val_dir}/images/{img_file}"
-        sample = fo.Sample(filepath=img_path)
-
-        fp32_masks, fp32_logits, (h, w) = run_onnx_inference(fp32_session, img_path)
-        int8_masks, int8_logits, _      = run_onnx_inference(int8_session, img_path)
-
-        sample["fp32_predictions"] = fo.Detections(
-            detections=masks_to_fo_detections(fp32_masks, fp32_logits, h, w)
-        )
-        sample["int8_predictions"] = fo.Detections(
-            detections=masks_to_fo_detections(int8_masks, int8_logits, h, w)
-        )
-        dataset.add_sample(sample)
-
-    session = fo.launch_app(dataset)
-    # In UI: toggle between fp32_predictions and int8_predictions
-    # to visually compare mask quality
-    return session
-```
-
----
-
-## 6. Run in Colab
-
-```python
-# Colab — after training
-from export_onnx import export_to_onnx, verify_onnx
-from quantize_int8 import quantize_int8, benchmark
-
-# Step 1: Export
-export_to_onnx("checkpoints/best_model.pth", "checkpoints/mask2former_fp32.onnx")
-
-# Step 2: Verify
-verify_onnx(model, "checkpoints/mask2former_fp32.onnx")
-
-# Step 3: Quantize
-quantize_int8(
-    fp32_onnx_path="checkpoints/mask2former_fp32.onnx",
-    int8_onnx_path="checkpoints/mask2former_int8.onnx",
-    calibration_dir="data/calibration",
+session = ort.InferenceSession(
+    "checkpoints/mask2former_int8.onnx",
+    providers=["CPUExecutionProvider"],
 )
 
-# Step 4: Benchmark
-benchmark("checkpoints/mask2former_fp32.onnx")
-benchmark("checkpoints/mask2former_int8.onnx")
+img = cv2.imread("image.jpg")
+img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+img = cv2.resize(img, (512, 512)).astype(np.float32) / 255.0
+img = (img - [0.485, 0.456, 0.406]) / [0.229, 0.224, 0.225]
+inp = img.transpose(2, 0, 1)[np.newaxis]  # NCHW
 
-# Step 5: Push to Drive
-!dvc add checkpoints/mask2former_fp32.onnx checkpoints/mask2former_int8.onnx
-!dvc push
-!git add checkpoints/*.dvc
-!git commit -m "model: add fp32 and int8 onnx exports"
-!git push
+masks_logits, class_logits = session.run(None, {"pixel_values": inp})
+# masks_logits: [1, 100, H, W]  — 100 query masks
+# class_logits: [1, 100, num_classes+1]  — class scores per query
 ```
-
----
-
-## 7. Expected Results
-
-```
-mask2former_fp32.onnx:  ~300 ms/image (CPU)  | ~300 MB
-mask2former_int8.onnx:  ~90 ms/image  (CPU)  | ~75 MB  | mAP drop ~1-2%
-```
-
-INT8 at ~90ms is fast enough for a ROS2 node running at ~10 Hz.
 
 ---
 
@@ -327,10 +144,9 @@ INT8 at ~90ms is fast enough for a ROS2 node running at ~10 Hz.
 
 | Step | Tool | Output |
 |---|---|---|
-| Export fp32 | `torch.onnx.export` | `mask2former_fp32.onnx` |
-| Verify | `onnxruntime` | max diff < 1e-3 |
-| Calibrate + Quantize | `onnxruntime.quantization` | `mask2former_int8.onnx` |
-| Visual eval | FiftyOne | fp32 vs INT8 comparison |
-| Storage | DVC → Google Drive | versioned ONNX artifacts |
+| Export fp32 | `torch.onnx.export` opset 16, `dynamo=False` | `mask2former_fp32.onnx` (284 MB) |
+| Verify | `onnxruntime` | max diff < 0.001 ✅ |
+| Quantize | selective static QInt8/QUInt8, Conv/MatMul/Gemm | `mask2former_int8.onnx` (82 MB) |
+| Storage | HF Hub + Google Drive | versioned artifacts |
 
 **Next:** [05 — Model Registry](05_model_registry.md)
