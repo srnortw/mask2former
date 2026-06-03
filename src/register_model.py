@@ -11,6 +11,29 @@ from config_loader import load_config
 from models.mask2former import build_model_from_checkpoint
 
 
+def _find_logged_model_uri(client: MlflowClient, run_id: str, name: str = "model") -> str | None:
+    """MLflow 3 stores models as LoggedModel entities (models:/<id>), not runs:/.../model."""
+    try:
+        run = client.get_run(run_id)
+        logged_models = client.search_logged_models(
+            experiment_ids=[run.info.experiment_id],
+            filter_string=f"source_run_id = '{run_id}'",
+            max_results=20,
+        )
+    except Exception:
+        return None
+
+    for lm in logged_models:
+        if getattr(lm, "name", None) != name:
+            continue
+        model_id = getattr(lm, "model_id", None)
+        if model_id:
+            return f"models:/{model_id}"
+        if getattr(lm, "model_uri", None):
+            return lm.model_uri
+    return None
+
+
 def register_in_mlflow(
     run_id: str,
     checkpoint_path: str,
@@ -32,9 +55,9 @@ def register_in_mlflow(
     client = MlflowClient()
     model_name = "mask2former-lane-seg"
 
-    # Log artifacts into the existing training run.
-    # MLflow 3.x register_model() requires a pytorch flavor model (log_model), not raw log_artifact.
+    # MLflow 3: log_model uses name= (not artifact_path=); register via models:/ URI.
     print(f"Logging artifacts to run {run_id}...")
+    model_info = None
     with mlflow.start_run(run_id=run_id):
         for path, subdir in [
             (fp32_onnx_path, "onnx/fp32"),
@@ -47,20 +70,39 @@ def register_in_mlflow(
         if os.path.exists(checkpoint_path):
             mlflow.log_artifact(checkpoint_path, artifact_path="checkpoints")
             print(f"  Logged: {checkpoint_path} → checkpoints/")
-
-            print(f"  Logging PyTorch model for registry from {checkpoint_path}...")
-            model = build_model_from_checkpoint(checkpoint_path)
-            mlflow.pytorch.log_model(model, artifact_path="model")
-            del model
-            print("  Logged: model → model/ (MLflow PyTorch flavor)")
         else:
             raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
 
-    model_uri = f"runs:/{run_id}/model"
-    print(f"\nRegistering model '{model_name}' from {model_uri}...")
-    result = mlflow.register_model(model_uri=model_uri, name=model_name)
-    version = result.version
-    print(f"Registered as version {version}")
+        model_uri = _find_logged_model_uri(client, run_id)
+        if model_uri:
+            print(f"  Reusing logged model on this run: {model_uri}")
+        else:
+            print(f"  Logging PyTorch model for registry from {checkpoint_path}...")
+            model = build_model_from_checkpoint(checkpoint_path)
+            model_info = mlflow.pytorch.log_model(
+                model,
+                name="model",
+                registered_model_name=model_name,
+                pip_requirements=["torch", "transformers", "torchvision"],
+            )
+            del model
+            model_uri = model_info.model_uri
+            print(f"  Logged model: {model_uri}")
+
+    if model_info is not None and model_info.registered_model_version is not None:
+        version = str(model_info.registered_model_version)
+        print(f"\nRegistered as version {version} (via log_model)")
+    else:
+        if not model_uri:
+            model_uri = _find_logged_model_uri(client, run_id)
+        if not model_uri:
+            raise RuntimeError(
+                "No LoggedModel found for this run. Re-run after git pull with the fixed register_model.py."
+            )
+        print(f"\nRegistering model '{model_name}' from {model_uri}...")
+        result = mlflow.register_model(model_uri=model_uri, name=model_name)
+        version = result.version
+        print(f"Registered as version {version}")
 
     # Tag the version with useful metadata
     client.set_model_version_tag(model_name, version, "backbone", cfg.model.backbone)
