@@ -12,9 +12,8 @@ Everything needed before writing a single line of code.
 **Why:** Code hosting, CI/CD (GitHub Actions), Docker image registry (GHCR)
 
 - Create account
-- Create new repository: `mask2former`
-- Go to **Settings → Developer Settings → Personal Access Tokens** → generate token with `repo`, `write:packages` scopes
-- Save token as `GITHUB_TOKEN`
+- Repository: [`srnortw/mask2former`](https://github.com/srnortw/mask2former) (public)
+- `GITHUB_TOKEN` optional in Colab (only needed if you `git push` from the notebook)
 
 ```bash
 # Authenticate GitHub CLI (already installed)
@@ -32,7 +31,7 @@ gh auth login
   ```
   /run/user/1000/gvfs/google-drive:host=gmail.com,user=srnortw/
   ```
-- Create a folder on Drive named `mask2former-mlops` (via Files app or Drive web)
+- Folder on Drive: `mask2former-mlops/` with subfolders `mask2former/` (git), `data/raw/`, `checkpoints/`
 
 ---
 

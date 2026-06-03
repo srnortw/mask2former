@@ -50,7 +50,7 @@
 | `TypeError: keep loop` | `range(keep.sum())` indexes by count not position | Replaced with `keep.nonzero(as_tuple=True)[0]` |
 | `TypeError: scores.values[q]` | `scores` is already a plain tensor, not a named tuple | Changed to `scores[q].item()` |
 | `ModuleNotFoundError: config_loader` | Wrong `sys.path` in Colab | Added `sys.path.insert(0, '/content/mask2former/src')` |
-| Private repo clone failure | No auth token in URL | Injected `GITHUB_TOKEN` into clone URL |
+| Private repo clone failure | (historical) | Repo is public; HTTPS clone without token |
 
 ---
 
@@ -99,8 +99,8 @@ all parameters                           → trainable
 | 1 | Verify GPU (CUDA, VRAM, torch version) |
 | 2 | Install dependencies (transformers, mlflow, albumentations, etc.) |
 | 3 | Load secrets from Colab secret manager |
-| 4 | Clone repo + download Roboflow dataset |
-| 5 | Load config + build DataLoaders + batch shape check |
+| 4 | Mount Drive, `git clone`/`git pull`, Roboflow → `mask2former-mlops/data/raw` |
+| 5 | Load config, point checkpoints/data/onnx paths to Drive, build DataLoaders |
 | 6 | Build model + verify phase freezing + sanity forward pass |
 | 7 | Test MLflow connection to DagsHub |
 | 8 | **Run training** (`train(cfg)`) |
@@ -115,7 +115,7 @@ all parameters                           → trainable
 | `HF_TOKEN` | Hugging Face write token |
 | `MLFLOW_TRACKING_URI` | `https://dagshub.com/srnortw/mask2former.mlflow` |
 | `MLFLOW_TRACKING_PASSWORD` | DagsHub access token |
-| `GITHUB_TOKEN` | Fine-grained PAT for private repo clone |
+| `GITHUB_TOKEN` | Optional — only for `git push` from Colab (repo is public) |
 | `MONGO_URI` | MongoDB Atlas connection string |
 
 ---
@@ -159,7 +159,8 @@ if os.path.exists(last_ckpt_path):
 
 In Colab, copy checkpoints to Drive after each session:
 ```python
-!cp -r /content/mask2former/checkpoints /content/drive/MyDrive/mask2former-mlops/checkpoints
+# Checkpoints are written directly to Drive (Cell 5 sets cfg.model.checkpoint_dir):
+#   /content/drive/MyDrive/mask2former-mlops/checkpoints/
 ```
 
 ---
