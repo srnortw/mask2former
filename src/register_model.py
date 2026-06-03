@@ -8,6 +8,7 @@ import mlflow.pytorch
 from mlflow.tracking import MlflowClient
 
 from config_loader import load_config
+from models.mask2former import build_model_from_checkpoint
 
 
 def register_in_mlflow(
@@ -31,20 +32,31 @@ def register_in_mlflow(
     client = MlflowClient()
     model_name = "mask2former-lane-seg"
 
-    # Log ONNX artifacts into the existing training run
-    print(f"Logging ONNX artifacts to run {run_id}...")
+    # Log artifacts into the existing training run.
+    # MLflow 3.x register_model() requires a pytorch flavor model (log_model), not raw log_artifact.
+    print(f"Logging artifacts to run {run_id}...")
     with mlflow.start_run(run_id=run_id):
-        for path, name in [
+        for path, subdir in [
             (fp32_onnx_path, "onnx/fp32"),
             (int8_onnx_path, "onnx/int8"),
-            (checkpoint_path, "checkpoints"),
         ]:
             if os.path.exists(path):
-                mlflow.log_artifact(path, artifact_path=name)
-                print(f"  Logged: {path} → {name}")
+                mlflow.log_artifact(path, artifact_path=subdir)
+                print(f"  Logged: {path} → {subdir}")
 
-    # Register model from the run's checkpoint artifact
-    model_uri = f"runs:/{run_id}/checkpoints"
+        if os.path.exists(checkpoint_path):
+            mlflow.log_artifact(checkpoint_path, artifact_path="checkpoints")
+            print(f"  Logged: {checkpoint_path} → checkpoints/")
+
+            print(f"  Logging PyTorch model for registry from {checkpoint_path}...")
+            model = build_model_from_checkpoint(checkpoint_path)
+            mlflow.pytorch.log_model(model, artifact_path="model")
+            del model
+            print("  Logged: model → model/ (MLflow PyTorch flavor)")
+        else:
+            raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+
+    model_uri = f"runs:/{run_id}/model"
     print(f"\nRegistering model '{model_name}' from {model_uri}...")
     result = mlflow.register_model(model_uri=model_uri, name=model_name)
     version = result.version
