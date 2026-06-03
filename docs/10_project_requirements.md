@@ -236,7 +236,6 @@ In Colab Pro, go to **🔑 Secrets (left sidebar)** and add:
 | `ROBOFLOW_API_KEY` | Roboflow API key |
 | `MLFLOW_TRACKING_URI` | `https://dagshub.com/srnortw/mask2former.mlflow` |
 | `MLFLOW_TRACKING_PASSWORD` | DagsHub token |
-| `RCLONE_CONFIG` | *(optional)* full contents of `~/.config/rclone/rclone.conf` for Drive mount — see [11_google_drive_workflow.md](11_google_drive_workflow.md) |
 
 Access in notebook:
 ```python

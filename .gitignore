@@ -1,7 +1,5 @@
 # Secrets — never commit
 .env
-.secrets/
-**/rclone.conf
 
 # Virtual environment
 .venv/
@@ -37,3 +35,6 @@ reports/
 # OS
 .DS_Store
 Thumbs.db
+
+# IDE
+.vscode/

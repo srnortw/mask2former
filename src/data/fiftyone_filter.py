@@ -13,10 +13,15 @@ def load_split(cfg, split: str):
     if fo.dataset_exists(name):
         fo.delete_dataset(name)
 
+    # Roboflow puts images flat in split/ not split/images/
+    split_dir = os.path.join(raw, split)
+    images_dir = os.path.join(split_dir, "images")
+    data_path = images_dir if os.path.isdir(images_dir) else split_dir
+
     dataset = fo.Dataset.from_dir(
         dataset_type=fo.types.COCODetectionDataset,
-        data_path=os.path.join(raw, split, "images"),
-        labels_path=os.path.join(raw, split, cfg.data.ann_filename),
+        data_path=data_path,
+        labels_path=os.path.join(split_dir, cfg.data.ann_filename),
         name=name,
         label_types=["segmentations"],
     )
