@@ -62,8 +62,8 @@ version = register_in_mlflow(
     fp32_onnx_path='checkpoints/mask2former_fp32.onnx',
     int8_onnx_path='checkpoints/mask2former_int8.onnx',
 )
-# → Logs ONNX + .pth artifacts, then mlflow.pytorch.log_model for registry
-# → Registers from runs:/<run_id>/model (not raw checkpoints/)
+# → Logs ONNX + .pth artifacts, then mlflow.pytorch.log_model(name="model")
+# → Registers via models:/<model_id> (MLflow 3 LoggedModel; runs:/.../model does not work)
 # → Tags version with backbone, num_classes, hf_repo, quantization
 # → Auto-transitions to Staging
 ```
