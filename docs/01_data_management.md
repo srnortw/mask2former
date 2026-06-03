@@ -163,6 +163,18 @@ git push
 
 ---
 
+### Google Drive folder layout (`mask2former-mlops`)
+
+| Path on Drive | Purpose |
+|---------------|---------|
+| `files/` | DVC remote storage (dataset cache — from `dvc push`) |
+| `checkpoints/` | Optional manual backups (Colab Cells 11/18) |
+| ~~`mask2former/`~~ | **Not used** — was a one-time whole-repo copy; safe to delete |
+
+Check contents: `rclone lsd gdrive:mask2former-mlops`
+
+We do **not** sync the full project to Drive. Code → GitHub. Colab → `git pull` + Roboflow + HF Hub.
+
 ### Colab: code via Git, data via Roboflow
 
 Colab does not use `dvc pull` for this project. Sync scripts with `git pull`; download data with Roboflow (notebook Cell 4).
