@@ -46,7 +46,7 @@ Registered → Staging (auto) → Production (manual, after ROS2 validation)
 
 ## 1. MLflow Model Registry
 
-### Register model (Colab Cell 20)
+### Register model (Colab Cell 20 — run Cell 4 first for `git sync`)
 
 ```python
 from register_model import register_in_mlflow, push_model_card

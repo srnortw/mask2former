@@ -99,13 +99,20 @@ all parameters                           → trainable
 | 1 | Verify GPU (CUDA, VRAM, torch version) |
 | 2 | Install dependencies (transformers, mlflow, albumentations, etc.) |
 | 3 | Load secrets from Colab secret manager |
-| 4 | Mount Drive, `git clone`/`git pull`, Roboflow → `mask2former-mlops/data/raw` |
-| 5 | Load config, point checkpoints/data/onnx paths to Drive, build DataLoaders |
-| 6 | Build model + verify phase freezing + sanity forward pass |
-| 7 | Test MLflow connection to DagsHub |
-| 8 | **Run training** (`train(cfg)`) |
-| 9 | Backup checkpoints to Google Drive |
-| 10 | Push `best_model.pth` to Hugging Face Hub |
+| 4 | Mount Drive, `git fetch` + `reset --hard origin/main`, `skip-worktree` on notebook |
+| 5 | First-time `git clone` + Roboflow → `mask2former-mlops/data/raw` |
+| 6 | Load config, point checkpoints/data/onnx paths to Drive, build DataLoaders |
+| 7 | Build model + verify phase freezing + sanity forward pass |
+| 8 | Test MLflow connection to DagsHub |
+| 9–11 | Training phases (`train(cfg)`) |
+| 12 | Verify checkpoints on Drive |
+| 13 | Push `best_model.pth` to Hugging Face Hub |
+| 14–18 | ONNX export + INT8 + push to HF |
+| 20 | MLflow registry + model card |
+
+**Git on Drive:** Colab saves outputs into `train_colab.ipynb`, which dirties git. Cell 4 resets code to GitHub and sets `skip-worktree` on the notebook so sync stays reliable. Checkpoints/data live **outside** the repo (`mask2former-mlops/checkpoints/`, `data/`).
+
+**Desktop:** Clear notebook outputs before committing (or use `nbstripout`) so GitHub stays clean.
 
 ### Colab Secrets Required
 
