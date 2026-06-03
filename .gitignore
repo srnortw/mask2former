@@ -1,5 +1,7 @@
 # Secrets — never commit
 .env
+.secrets/
+**/rclone.conf
 
 # Virtual environment
 .venv/

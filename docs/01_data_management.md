@@ -163,18 +163,25 @@ git push
 
 ---
 
-### Pull Data on a New Machine (e.g. Colab)
+### Whole project on Drive (recommended)
+
+Work inside `~/rclone-gdrive/mask2former` so checkpoints and data survive Colab restarts.
+See **[11 — Google Drive Workflow](11_google_drive_workflow.md)** for Ubuntu + Colab setup.
+
+```bash
+./scripts/mount_gdrive.sh
+cd ~/rclone-gdrive/mask2former
+```
+
+### Pull Data on a New Machine (legacy — Colab GNOME mount)
+
+Prefer rclone mount (doc 11). Old flow:
 
 ```python
-# In Colab
 from google.colab import drive
 drive.mount('/content/drive')
-
 !git clone https://github.com/srnortw/mask2former.git
 %cd mask2former
-!pip install dvc
-
-# Point DVC to Colab's Drive mount
 !dvc remote add -d -f gdrive "/content/drive/MyDrive/mask2former-mlops"
 !dvc pull
 ```

@@ -64,7 +64,7 @@ End-to-end MLOps pipeline for **instance segmentation** using **Mask2Former with
 | Dataset | Roboflow | Free tier |
 | Dataset exploration | FiftyOne | Open-source |
 | Data versioning | DVC | Open-source |
-| Data storage | Google Drive (GNOME) | Already owned |
+| Data storage | Google Drive via rclone mount | Already owned |
 | Training compute | Google Colab Pro | Already paying |
 | Experiment tracking | MLflow | Open-source (self-hosted) |
 | Model registry | Hugging Face Hub | Free |
@@ -93,7 +93,9 @@ mask2former/
 │   ├── 06_serving.md
 │   ├── 07_monitoring.md
 │   ├── 08_cicd.md
-│   └── 09_ros2.md
+│   ├── 09_ros2.md
+│   ├── 10_project_requirements.md
+│   └── 11_google_drive_workflow.md   # whole project on Drive
 ├── data/                        # DVC tracked → Google Drive
 │   ├── raw/                     # Roboflow COCO download
 │   ├── processed/               # FiftyOne filtered
