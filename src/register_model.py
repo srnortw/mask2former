@@ -11,26 +11,64 @@ from config_loader import load_config
 from models.mask2former import build_model_from_checkpoint
 
 
-def _find_logged_model_uri(client: MlflowClient, run_id: str, name: str = "model") -> str | None:
-    """MLflow 3 stores models as LoggedModel entities (models:/<id>), not runs:/.../model."""
-    try:
-        run = client.get_run(run_id)
-        logged_models = client.search_logged_models(
-            experiment_ids=[run.info.experiment_id],
-            filter_string=f"source_run_id = '{run_id}'",
-            max_results=20,
-        )
-    except Exception:
-        return None
+REGISTRY_CODE_VERSION = "mlflow3-v2"  # printed so Colab users can confirm git pull worked
 
-    for lm in logged_models:
-        if getattr(lm, "name", None) != name:
-            continue
-        model_id = getattr(lm, "model_id", None)
-        if model_id:
-            return f"models:/{model_id}"
-        if getattr(lm, "model_uri", None):
-            return lm.model_uri
+
+def _logged_model_to_uri(lm) -> str | None:
+    model_id = getattr(lm, "model_id", None)
+    if model_id:
+        return f"models:/{model_id}"
+    uri = getattr(lm, "model_uri", None)
+    if uri and uri.startswith("models:/"):
+        return uri
+    return None
+
+
+def _find_logged_model_uri(client: MlflowClient, run_id: str, name: str = "model") -> str | None:
+    """MLflow 3: models live as LoggedModel entities (models:/<id>), not runs:/.../model."""
+    run = client.get_run(run_id)
+    exp_id = run.info.experiment_id
+    candidates: list[tuple[int, str]] = []
+
+    def _collect(logged_models, label: str):
+        for lm in logged_models or []:
+            uri = _logged_model_to_uri(lm)
+            if not uri:
+                continue
+            ts = getattr(lm, "creation_timestamp", 0) or 0
+            lm_name = getattr(lm, "name", None)
+            if lm_name == name:
+                candidates.append((ts, uri))
+            elif label == "any":
+                candidates.append((ts, uri))
+
+    try:
+        _collect(
+            client.search_logged_models(
+                experiment_ids=[exp_id],
+                filter_string=f"source_run_id = '{run_id}'",
+                max_results=50,
+            ),
+            "named",
+        )
+    except Exception as e:
+        print(f"  (search_logged_models client: {e})")
+
+    try:
+        _collect(
+            mlflow.search_logged_models(
+                experiment_ids=[exp_id],
+                filter_string=f"source_run_id = '{run_id}'",
+                max_results=50,
+            ),
+            "named",
+        )
+    except Exception as e:
+        print(f"  (search_logged_models fluent: {e})")
+
+    if candidates:
+        candidates.sort(key=lambda x: x[0])
+        return candidates[-1][1]
     return None
 
 
@@ -55,9 +93,11 @@ def register_in_mlflow(
     client = MlflowClient()
     model_name = "mask2former-lane-seg"
 
-    # MLflow 3: log_model uses name= (not artifact_path=); register via models:/ URI.
+    # MLflow 3: log_model uses name= (not artifact_path=); never register runs:/.../model.
+    print(f"register_model.py [{REGISTRY_CODE_VERSION}]")
     print(f"Logging artifacts to run {run_id}...")
     model_info = None
+    model_uri = None
     with mlflow.start_run(run_id=run_id):
         for path, subdir in [
             (fp32_onnx_path, "onnx/fp32"),
@@ -91,17 +131,21 @@ def register_in_mlflow(
 
     if model_info is not None and model_info.registered_model_version is not None:
         version = str(model_info.registered_model_version)
-        print(f"\nRegistered as version {version} (via log_model)")
+        print(f"\nRegistered as version {version} (via log_model + registered_model_name)")
     else:
         if not model_uri:
             model_uri = _find_logged_model_uri(client, run_id)
         if not model_uri:
             raise RuntimeError(
-                "No LoggedModel found for this run. Re-run after git pull with the fixed register_model.py."
+                "No LoggedModel found for this run. Run Cell 4 (git pull) then re-run Cell 20."
             )
-        print(f"\nRegistering model '{model_name}' from {model_uri}...")
+        if model_uri.startswith("runs:/"):
+            raise RuntimeError(
+                f"Refusing runs:/ URI ({model_uri}). Pull latest code and reload register_model."
+            )
+        print(f"\nRegistering '{model_name}' from {model_uri}...")
         result = mlflow.register_model(model_uri=model_uri, name=model_name)
-        version = result.version
+        version = str(result.version)
         print(f"Registered as version {version}")
 
     # Tag the version with useful metadata
