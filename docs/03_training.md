@@ -123,7 +123,7 @@ all parameters                           → trainable
 | `MLFLOW_TRACKING_URI` | `https://dagshub.com/srnortw/mask2former.mlflow` |
 | `MLFLOW_TRACKING_PASSWORD` | DagsHub access token |
 | `GITHUB_TOKEN` | Optional — only for `git push` from Colab (repo is public) |
-| `MONGO_URI` | MongoDB Atlas connection string |
+| `MONGO_URI` | MongoDB Atlas — project **mask2former-mlops**, cluster **mask2former-cluster** |
 
 ---
 

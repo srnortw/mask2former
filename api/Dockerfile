@@ -12,6 +12,7 @@ RUN pip install --no-cache-dir -r requirements-api.txt
 
 COPY src/__init__.py src/__init__.py
 COPY src/inference.py src/inference.py
+COPY src/mongo_logger.py src/mongo_logger.py
 COPY api/main.py main.py
 
 ENV PYTHONPATH=/app

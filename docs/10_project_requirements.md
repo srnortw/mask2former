@@ -73,16 +73,21 @@ hf auth login
 ### 5. MongoDB Atlas
 **URL:** https://cloud.mongodb.com  
 **Plan:** Free (M0 cluster, 512 MB)  
-**Why:** Store prediction metadata, drift monitoring data  
+**Why:** Store prediction metadata, drift monitoring data (Phase 07)  
 **Note:** Atlas CLI already installed (`atlascli 1.55.0`)
 
-- Create account
-- Create organization and project
-- Create free **M0** cluster (AWS, us-east-1)
+- Atlas project: **`mask2former-mlops`** (id `6a21b995cbf3f23e5981be8f`)
+- Cluster: **`mask2former-cluster`** (M0, `EU_CENTRAL_1`)
+- DB user: `mask2former_api` → database `mask2former`
+- Or run: `./scripts/setup_atlas_mongo.sh` after `atlas auth login`
+- Do **not** use old **Cluster0** (stuck `UPDATING` in separate CV project)
+
+- Create account (if new)
+- Create project `mask2former-mlops` + M0 cluster (script does this)
 - Go to **Database Access** → Add user → password auth
 - Go to **Network Access** → Add IP → `0.0.0.0/0` (allow all, or restrict to your IP)
 - Go to **Clusters → Connect** → copy connection string
-- Save as `MONGO_URI=mongodb+srv://user:pass@cluster.xxxxx.mongodb.net/mask2former`
+- Save as `MONGO_URI` for project **mask2former-mlops**, cluster **mask2former-cluster** (see `.env.example`)
 
 ```bash
 # Authenticate Atlas CLI
@@ -153,6 +158,8 @@ pip install \
 
 ## Environment Variables Checklist
 
+Copy `.env.example` → `.env` and fill in secrets. The example documents Atlas project **mask2former-mlops**.
+
 A `.env` file already exists in the project root at `mask2former/.env`.  
 **Open it and replace every placeholder with your real values** after completing the account setup steps above.
 
@@ -171,10 +178,12 @@ Here is every variable and exactly where to get it:
 | `ROBOFLOW_VERSION` | Roboflow → dataset version number | `1` |
 | `HF_TOKEN` | Hugging Face → Settings → Access Tokens | `hf_xxxx...` |
 | `HF_REPO_ID` | Your HF username + repo name | `yourname/mask2former-instance-seg` |
-| `MONGO_URI` | Atlas → Clusters → Connect → connection string | `mongodb+srv://user:pass@cluster.xxxx.mongodb.net/` |
-| `MONGO_DB_NAME` | your choice (default: `mask2former`) | `mask2former` |
-| `MONGO_COLLECTION_PREDICTIONS` | your choice (default: `predictions`) | `predictions` |
-| `MONGO_COLLECTION_DRIFT` | your choice (default: `drift_reports`) | `drift_reports` |
+| `MONGO_URI` | Atlas **mask2former-mlops** → **mask2former-cluster** → Connect | `mongodb+srv://mask2former_api:...@mask2former-cluster.*.mongodb.net/mask2former` |
+| `MONGO_DB_NAME` | database in that cluster (default: `mask2former`) | `mask2former` |
+| `MONGO_COLLECTION_PREDICTIONS` | collection name (default: `predictions`) | `predictions` |
+| `MONGO_COLLECTION_DRIFT` | collection name (default: `drift_reports`) | `drift_reports` |
+| `ATLAS_PROJECT_ID` | Atlas → Project Settings → ID | `6a21b995cbf3f23e5981be8f` |
+| `ATLAS_CLUSTER` | cluster name in mask2former-mlops | `mask2former-cluster` |
 | `MLFLOW_TRACKING_URI` | Render.com → your service URL | `https://your-app.onrender.com` |
 | `MLFLOW_EXPERIMENT_NAME` | your choice | `mask2former-swin` |
 | `GITHUB_TOKEN` | GitHub → Settings → Developer Settings → Tokens | `ghp_xxxx...` |
@@ -256,7 +265,7 @@ os.environ["MLFLOW_TRACKING_URI"] = userdata.get("MLFLOW_TRACKING_URI")
 2.  gh auth login                             → authenticate CLI
 3.  Create Roboflow account + project         → get ROBOFLOW_API_KEY
 4.  Create Hugging Face account               → get HF_TOKEN
-5.  Create MongoDB Atlas account + M0 cluster → get MONGO_URI
+5.  MongoDB Atlas project **mask2former-mlops** + cluster **mask2former-cluster** → `MONGO_URI` (see `setup_atlas_mongo.sh`)
 6.  Create Render.com account + MLflow service → get MLFLOW_TRACKING_URI
 7.  Create Drive folder: mask2former-mlops    → (already have Drive)
 8.  cd ~/Desktop/mask2former

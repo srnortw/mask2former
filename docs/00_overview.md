@@ -2,7 +2,22 @@
 
 ## Goal
 
-End-to-end MLOps pipeline for **instance segmentation** using **Mask2Former with Swin Transformer backbone**, trained on a custom dataset from Roboflow, and deployed for use in a **ROS2** robotics project.
+**Robotic perception** pipeline: end-to-end MLOps for **lane instance segmentation** using **Mask2Former (Swin-Small)**, trained on a Roboflow dataset, deployed for a **ROS2** robot (camera → masks → `/perception` topics). Computer vision is the method; the project target is autonomous driving / lane perception on-robot.
+
+---
+
+## Workspaces (`mask2former-mlops`)
+
+The name **`mask2former-mlops`** is used consistently for cloud resources (not the git repo folder name):
+
+| Where | What |
+|-------|------|
+| **Google Drive** | `mask2former-mlops/` — `data/raw/`, `checkpoints/`, git clone at `mask2former-mlops/mask2former/` |
+| **MongoDB Atlas** | Project **`mask2former-mlops`** — cluster **`mask2former-cluster`**, DB **`mask2former`** |
+| **GitHub** | Repo `srnortw/mask2former` (code only) |
+
+Atlas project ID: `6a21b995cbf3f23e5981be8f` (set `ATLAS_PROJECT_ID` in `.env`).  
+Do not use the old **Computer_vision** Atlas project / **Cluster0** for this pipeline.
 
 ---
 
@@ -46,7 +61,7 @@ End-to-end MLOps pipeline for **instance segmentation** using **Mask2Former with
       FastAPI + Docker (ONNX INT8 inference)
 
 [07] Monitoring
-      Evidently AI (drift) + MongoDB Atlas (prediction logs)
+      Evidently AI (drift) + MongoDB Atlas project mask2former-mlops (prediction logs)
 
 [08] CI/CD
       GitHub Actions (test → build → push Docker image)
@@ -70,7 +85,7 @@ End-to-end MLOps pipeline for **instance segmentation** using **Mask2Former with
 | Model registry | Hugging Face Hub | Free |
 | Export & quantization | ONNX + ONNXRuntime | Open-source |
 | Serving | FastAPI + Docker | Open-source |
-| Database | MongoDB Atlas | Free tier (512 MB) |
+| Database | MongoDB Atlas (`mask2former-mlops`) | Free tier (512 MB) |
 | Monitoring | Evidently AI | Open-source |
 | CI/CD | GitHub Actions | Free tier |
 | Code + pipeline | GitHub + DVC | Free |
@@ -112,14 +127,22 @@ mask2former/
 │   ├── evaluate.py
 │   ├── export_onnx.py
 │   ├── quantize_int8.py
-│   └── mongo_logger.py
+│   ├── mongo_logger.py
+│   └── monitoring/drift_report.py
 ├── api/
 │   ├── main.py                  # FastAPI app
 │   ├── Dockerfile
 │   └── requirements-api.txt
 ├── src/inference.py             # ONNX preprocess + postprocess (serving / ROS2)
 ├── docker-compose.yml
+├── scripts/
+│   ├── setup_atlas_mongo.sh     # Atlas project mask2former-mlops
+│   ├── seed_predictions.sh      # batch /predict → MongoDB
+│   ├── run_drift_report.sh      # Evidently drift (uses .venv)
+│   └── visualize_predict.py
+├── requirements-monitoring.txt
 ├── tests/test_inference.py
+├── tests/test_mongo_logger.py
 ├── ros2_ws/
 │   └── src/mask2former_ros/
 │       ├── segmentation_node.py

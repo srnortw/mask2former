@@ -22,7 +22,7 @@ Add these in GitHub → Settings → Secrets and variables → Actions:
 | Secret | Value |
 |---|---|
 | `HF_TOKEN` | Hugging Face access token |
-| `MONGO_URI` | MongoDB Atlas connection string |
+| `MONGO_URI` | MongoDB Atlas **mask2former-mlops** (GitHub secret) |
 | `ROBOFLOW_API_KEY` | Roboflow API key |
 | `GHCR_TOKEN` | GitHub personal access token (for container registry) |
 

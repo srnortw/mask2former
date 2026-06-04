@@ -22,6 +22,7 @@ from src.inference import (  # noqa: E402
     resolve_model_path,
     run_inference,
 )
+from src.mongo_logger import try_create_logger  # noqa: E402
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -35,6 +36,7 @@ CONF_THRESH = float(os.getenv("CONF_THRESH", "0.5"))
 
 session = None
 categories = {}
+mongo_logger = None
 
 
 class InstancePrediction(BaseModel):
@@ -56,7 +58,7 @@ class PredictResponse(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global session, categories
+    global session, categories, mongo_logger
     logger.info("Loading ONNX model: %s/%s", HF_REPO_ID, MODEL_FILE)
     model_path = resolve_model_path(
         hf_repo_id=HF_REPO_ID,
@@ -66,9 +68,11 @@ async def lifespan(app: FastAPI):
     )
     session = create_session(model_path)
     categories = load_categories()
+    mongo_logger = try_create_logger()
     logger.info("Model ready: %s", model_path)
     yield
     session = None
+    mongo_logger = None
 
 
 app = FastAPI(
@@ -85,6 +89,7 @@ def health():
         "model": MODEL_FILE,
         "hf_repo": HF_REPO_ID,
         "loaded": session is not None,
+        "mongodb": mongo_logger is not None,
     }
 
 
@@ -108,9 +113,20 @@ async def predict(file: UploadFile = File(...)):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
-    return PredictResponse(
+    response = PredictResponse(
         image_id=file.filename or "upload",
         instances=instances,
         inference_ms=round(inference_ms, 2),
         model=MODEL_FILE,
     )
+
+    if mongo_logger is not None:
+        mongo_logger.log_prediction(
+            image_id=response.image_id,
+            instances=instances,
+            inference_ms=response.inference_ms,
+            model_version=MODEL_FILE,
+            source="api",
+        )
+
+    return response

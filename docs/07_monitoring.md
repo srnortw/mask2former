@@ -9,142 +9,195 @@ MongoDB Atlas  ← log every prediction (score, category, latency, image_id)
   ↓
 Evidently AI   ← compute drift reports (score distribution shift, class distribution)
   ↓
-Grafana / HTML reports  ← visualize drift over time
+HTML reports in reports/  ← open in browser
   ↓
-Alert: if drift detected → trigger retraining pipeline
+Alert: if drift detected → consider retraining
 ```
 
 ---
 
-## 1. MongoDB Atlas Setup
+## What We Actually Built
 
-Atlas CLI is already installed (`atlascli 1.55.0`).
+| File | Purpose |
+|------|---------|
+| `src/mongo_logger.py` | `PredictionLogger` + `try_create_logger()` (optional if no `MONGO_URI`) |
+| `src/monitoring/drift_report.py` | Evidently 0.7 drift report: val set vs MongoDB predictions |
+| `scripts/run_drift_report.sh` | Runs drift report via `.venv/bin/python` |
+| `scripts/seed_predictions.sh` | Batch `/predict` on val images for MongoDB seeding |
+| `api/main.py` | Logs each `/predict` to MongoDB (metadata only, no masks) |
+| `requirements-monitoring.txt` | evidently, pandas, pycocotools, pymongo |
+| `docker-compose.yml` | Passes `MONGO_*` env vars to API container |
+
+### Behaviour
+
+- API **works without MongoDB** — if `MONGO_URI` is unset, serving is unchanged
+- `/health` includes `"mongodb": true/false`
+- Stored fields: `image_id`, `timestamp`, `instances` (bbox/score/name), `mean_score`, `inference_ms`
+
+### Atlas setup (2026-06-04)
+
+Dedicated MLOps project (separate from old **Computer_vision** project where **Cluster0** was stuck `UPDATING`):
+
+| Item | Value |
+|------|--------|
+| Project | **`mask2former-mlops`** (`6a21b995cbf3f23e5981be8f`) |
+| Cluster | **`mask2former-cluster`** (M0, `EU_CENTRAL_1`) — **IDLE** |
+| SRV host | `mask2former-cluster.ceg04zs.mongodb.net` |
+| DB user | `mask2former_api` with `readWrite@mask2former` |
+| Database | `mask2former` |
+| Collections | `predictions`, `drift_reports` (indexes created) |
+| `.env` | `MONGO_URI` points at new cluster |
+
+Leave **Cluster0** in the old project alone (or delete later in Atlas UI); this pipeline does not use it.
+
+### Phase 07 complete (2026-06-04)
+
+| Check | Result |
+|-------|--------|
+| Atlas **mask2former-mlops** / **mask2former-cluster** | IDLE, `mongodb: true` on `/health` |
+| Predictions logged | 100+ docs in `predictions` |
+| Drift report | `scripts/run_drift_report.sh` → HTML in `reports/` (uses **`.venv`**) |
+| Tests | `tests/test_mongo_logger.py`, `tests/test_inference.py` |
+
+**Use project venv** (not system Python):
 
 ```bash
-# Login to Atlas
+.venv/bin/pip install -r requirements-monitoring.txt
+./scripts/run_drift_report.sh
+```
+
+### Local test
+
+- Docker build OK with `mongo_logger.py` in image
+- `source .env && docker compose up --build -d` → `/health` → `"mongodb": true`
+
+---
+
+## 1. MongoDB Atlas Setup (Atlas CLI)
+
+Atlas CLI is installed (`atlascli 1.55+`). Default Atlas project: **`mask2former-mlops`** (`6a21b995cbf3f23e5981be8f`).
+
+```bash
+atlas config set project_id 6a21b995cbf3f23e5981be8f
+```
+
+### One-command setup (recommended)
+
+```bash
+cd ~/Desktop/mask2former
+
+# Refresh login if session expired
 atlas auth login
 
-# Create a free cluster (M0, 512MB)
-atlas clusters create mask2former-cluster \
-  --provider AWS \
-  --region US_EAST_1 \
-  --tier M0 \
-  --projectId your-project-id
-
-# Get connection string
-atlas clusters connectionStrings describe mask2former-cluster
-# → mongodb+srv://user:pass@mask2former-cluster.xxxxx.mongodb.net/
+# Creates M0 cluster, DB user, IP allowlist, indexes, updates .env
+./scripts/setup_atlas_mongo.sh
 ```
 
-Set connection string in `.env`:
+The script:
+
+| Step | Atlas CLI / action |
+|------|---------------------|
+| Project | `mask2former-mlops` (create once in UI or `atlas projects create mask2former-mlops`) |
+| Auth check | `atlas projects list` |
+| Create cluster | `atlas clusters create mask2former-cluster` in that project (skipped if exists) |
+| Wait until ready | polls until `stateName == IDLE` |
+| Network access | `atlas accessLists create --currentIp` |
+| DB user | `mask2former_api` with `readWrite@mask2former` |
+| Connection URI | `atlas clusters connectionStrings describe` → writes `MONGO_URI` to `.env` |
+| Collections | creates indexes on `predictions` and `drift_reports` via pymongo |
+
+**Docker from a changing IP?** Re-run with dev-wide access (not for production):
+
 ```bash
-MONGO_URI=mongodb+srv://user:pass@mask2former-cluster.xxxxx.mongodb.net/mask2former
+ALLOW_ANY_IP=1 ./scripts/setup_atlas_mongo.sh
+```
+
+### Manual Atlas CLI (project `mask2former-mlops`)
+
+```bash
+atlas auth login
+
+export ATLAS_PROJECT_ID=6a21b995cbf3f23e5981be8f
+atlas config set project_id "$ATLAS_PROJECT_ID"
+
+atlas clusters create mask2former-cluster \
+  --projectId "$ATLAS_PROJECT_ID" \
+  --provider AWS \
+  --region EU_CENTRAL_1 \
+  --tier M0
+
+atlas accessLists create --currentIp --projectId "$ATLAS_PROJECT_ID"
+
+atlas dbusers create \
+  --username mask2former_api \
+  --password 'YOUR_SECURE_PASSWORD' \
+  --role readWrite@mask2former \
+  --projectId "$ATLAS_PROJECT_ID"
+
+atlas clusters connectionStrings describe mask2former-cluster \
+  --projectId "$ATLAS_PROJECT_ID" -o json
+# e.g. mongodb+srv://mask2former-cluster.ceg04zs.mongodb.net
+```
+
+`.env` (copy from `.env.example`; never commit `.env`):
+
+```bash
+MONGO_URI=mongodb+srv://mask2former_api:PASSWORD@mask2former-cluster.ceg04zs.mongodb.net/mask2former?retryWrites=true&w=majority
+MONGO_DB_NAME=mask2former
+MONGO_COLLECTION_PREDICTIONS=predictions
+MONGO_COLLECTION_DRIFT=drift_reports
+ATLAS_PROJECT_ID=6a21b995cbf3f23e5981be8f
+ATLAS_CLUSTER=mask2former-cluster
 ```
 
 ---
 
-## 2. Prediction Logger
+## 2. Test monitoring locally
 
-```python
-# src/mongo_logger.py
-import os
-import datetime
-from pymongo import MongoClient
-from pymongo.errors import ConnectionFailure
-import logging
+### A) Start API with MongoDB logging
 
-logger = logging.getLogger(__name__)
+```bash
+cd ~/Desktop/mask2former
+source .env    # MONGO_URI, HF_TOKEN, ...
 
-
-class PredictionLogger:
-    def __init__(self, mongo_uri: str = None):
-        uri = mongo_uri or os.environ["MONGO_URI"]
-        self.client = MongoClient(uri, serverSelectionTimeoutMS=3000)
-        self.db = self.client["mask2former"]
-        self.predictions = self.db["predictions"]
-        self.drift_reports = self.db["drift_reports"]
-        self._ensure_indexes()
-
-    def _ensure_indexes(self):
-        self.predictions.create_index("timestamp")
-        self.predictions.create_index("image_id")
-        self.predictions.create_index("category_id")
-
-    def log_prediction(
-        self,
-        image_id: str,
-        instances: list,
-        inference_ms: float,
-        model_version: str,
-        source: str = "api",   # "api" or "ros2"
-    ):
-        doc = {
-            "image_id": image_id,
-            "timestamp": datetime.datetime.utcnow(),
-            "model_version": model_version,
-            "source": source,
-            "inference_ms": inference_ms,
-            "num_instances": len(instances),
-            "instances": [
-                {
-                    "category_id": inst["category_id"],
-                    "category_name": inst["category_name"],
-                    "score": inst["score"],
-                    "bbox": inst["bbox"],
-                }
-                for inst in instances
-            ],
-            # Average confidence score across all instances
-            "mean_score": sum(i["score"] for i in instances) / len(instances) if instances else 0.0,
-        }
-
-        try:
-            self.predictions.insert_one(doc)
-        except Exception as e:
-            logger.warning(f"Failed to log prediction: {e}")
-
-    def get_recent_predictions(self, hours: int = 24, limit: int = 1000):
-        cutoff = datetime.datetime.utcnow() - datetime.timedelta(hours=hours)
-        return list(
-            self.predictions.find(
-                {"timestamp": {"$gte": cutoff}},
-                {"_id": 0}
-            ).limit(limit)
-        )
+docker compose up --build -d
+curl http://localhost:8000/health
+# → "mongodb": true
 ```
 
-### Integrate logger into FastAPI
+### B) Send a few predictions
 
-```python
-# api/main.py — add to lifespan and predict endpoint
-
-from mongo_logger import PredictionLogger
-
-mongo_logger: PredictionLogger = None
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    global session, mongo_logger
-    # ... model loading ...
-    mongo_logger = PredictionLogger()
-    yield
-
-
-@app.post("/predict", response_model=PredictResponse)
-async def predict(file: UploadFile = File(...)):
-    # ... inference ...
-    result = PredictResponse(...)
-
-    # Log to MongoDB (non-blocking, fire-and-forget)
-    mongo_logger.log_prediction(
-        image_id=file.filename,
-        instances=[i.dict() for i in result.instances],
-        inference_ms=result.inference_ms,
-        model_version=MODEL_FILE,
-    )
-
-    return result
+```bash
+for img in data/raw/valid/*.jpg; do
+  curl -s -X POST http://localhost:8000/predict -F "file=@$img" > /dev/null
+  echo "logged: $img"
+done
 ```
+
+Or use `scripts/visualize_predict.py` (also hits `/predict`).
+
+### C) Run drift report
+
+```bash
+# Always use project .venv (not base/system Python)
+.venv/bin/pip install -r requirements-monitoring.txt
+
+./scripts/seed_predictions.sh   # optional if MongoDB has < 10 samples
+
+./scripts/run_drift_report.sh \
+  --val-ann data/raw/valid/_annotations.coco.json \
+  --hours 24 \
+  --output-dir reports
+```
+
+Equivalent without helper script:
+
+```bash
+source .env
+.venv/bin/python -m src.monitoring.drift_report --val-ann data/raw/valid/_annotations.coco.json
+```
+
+Open `reports/drift_report_*.html` in a browser.
 
 ---
 
@@ -250,7 +303,7 @@ def run_drift_report(
 ```bash
 # Run drift check every 6 hours
 # Add to crontab: crontab -e
-0 */6 * * * cd ~/Desktop/mask2former && source .venv/bin/activate && python src/monitoring/drift_report.py
+0 */6 * * * cd ~/Desktop/mask2former && source .env && ./scripts/run_drift_report.sh
 ```
 
 ---
@@ -326,8 +379,8 @@ def review_low_confidence_predictions(threshold: float = 0.4):
 
 | Tool | Role |
 |---|---|
-| MongoDB Atlas | Store every prediction with metadata |
-| Atlas CLI | Cluster management from terminal |
+| MongoDB Atlas | Project **mask2former-mlops** — store every prediction with metadata |
+| Atlas CLI | Manage **mask2former-cluster** from terminal |
 | Evidently AI | Statistical drift detection (score, class, latency) |
 | FiftyOne | Visual review of low confidence predictions |
 | Cron job | Scheduled drift reports every 6 hours |

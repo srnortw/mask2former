@@ -1,0 +1,5 @@
+# Install in project venv: .venv/bin/pip install -r requirements-monitoring.txt
+evidently>=0.7.0,<0.8.0
+pandas>=2.0.0
+pycocotools>=2.0.0
+pymongo>=4.6.0

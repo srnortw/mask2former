@@ -22,6 +22,9 @@ services:
       int8: mask2former_int8.onnx
 
   mongodb:
+    # Atlas project: mask2former-mlops | cluster: mask2former-cluster
+    project_id:             ${ATLAS_PROJECT_ID}
+    cluster:                ${ATLAS_CLUSTER}
     uri:                    ${MONGO_URI}
     db_name:                ${MONGO_DB_NAME}
     collection_predictions: ${MONGO_COLLECTION_PREDICTIONS}
