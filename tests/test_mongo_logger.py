@@ -1,6 +1,5 @@
 """Unit tests for prediction logging helpers (no live MongoDB required)."""
 
-import os
 from unittest.mock import MagicMock, patch
 
 import pytest

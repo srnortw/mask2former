@@ -3,263 +3,143 @@
 ## Overview
 
 ```
-git push origin main
+git push / PR → main
   ↓
-GitHub Actions triggers
-  ├── [ci.yml]     lint + unit tests + Docker build
-  └── [docker.yml] build and push Docker image to GHCR (GitHub Container Registry)
-```
+.github/workflows/ci.yml
+  ├── ruff lint (serving + monitoring + tests)
+  ├── pytest (unit tests, no ONNX download)
+  └── docker build (verify api/Dockerfile)
 
-We do NOT automate retraining in CI (training runs on Colab manually).
-CI validates code quality and keeps the Docker image up to date.
-
----
-
-## 1. Repository Secrets
-
-Add these in GitHub → Settings → Secrets and variables → Actions:
-
-| Secret | Value |
-|---|---|
-| `HF_TOKEN` | Hugging Face access token |
-| `MONGO_URI` | MongoDB Atlas **mask2former-mlops** (GitHub secret) |
-| `ROBOFLOW_API_KEY` | Roboflow API key |
-| `GHCR_TOKEN` | GitHub personal access token (for container registry) |
-
----
-
-## 2. CI Workflow — Lint + Tests + Docker Build
-
-```yaml
-# .github/workflows/ci.yml
-name: CI
-
-on:
-  push:
-    branches: [main, develop]
-  pull_request:
-    branches: [main]
-
-jobs:
-  lint-and-test:
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-
-      - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
-          pip install ruff pytest
-
-      - name: Lint with ruff
-        run: ruff check src/ api/ tests/
-
-      - name: Run tests
-        env:
-          MONGO_URI: ${{ secrets.MONGO_URI }}
-        run: pytest tests/ -v --tb=short
-
-      - name: Build Docker image
-        run: |
-          docker build -f api/Dockerfile -t mask2former-api:ci-test .
-          echo "Docker build succeeded"
-```
-
----
-
-## 3. Docker Publish Workflow
-
-```yaml
-# .github/workflows/docker.yml
-name: Build and Push Docker Image
-
-on:
-  push:
-    tags:
-      - "v*"          # only on version tags like v1.0, v1.1
-
-env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}   # e.g. your-user/mask2former
-
-jobs:
-  build-and-push:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract metadata (tags, labels)
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest
-
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: api/Dockerfile
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-```
-
----
-
-## 4. Tests to Write
-
-```python
-# tests/test_api.py
-import pytest
-from fastapi.testclient import TestClient
-import numpy as np
-import cv2
-import io
-
-
-def test_health(client):
-    response = client.get("/health")
-    assert response.status_code == 200
-    assert response.json()["status"] == "ok"
-
-
-def test_predict_returns_instances(client, sample_image_bytes):
-    response = client.post(
-        "/predict",
-        files={"file": ("test.jpg", sample_image_bytes, "image/jpeg")}
-    )
-    assert response.status_code == 200
-    data = response.json()
-    assert "instances" in data
-    assert "inference_ms" in data
-    assert data["inference_ms"] > 0
-
-
-def test_predict_instance_fields(client, sample_image_bytes):
-    response = client.post(
-        "/predict",
-        files={"file": ("test.jpg", sample_image_bytes, "image/jpeg")}
-    )
-    data = response.json()
-    if data["instances"]:
-        inst = data["instances"][0]
-        assert "score" in inst
-        assert "bbox" in inst
-        assert "category_id" in inst
-        assert 0.0 <= inst["score"] <= 1.0
-        assert len(inst["bbox"]) == 4
-```
-
-```python
-# tests/conftest.py
-import pytest
-import numpy as np
-import cv2
-from fastapi.testclient import TestClient
-import sys
-sys.path.insert(0, "api")
-
-
-@pytest.fixture(scope="session")
-def sample_image_bytes():
-    img = np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8)
-    _, encoded = cv2.imencode(".jpg", img)
-    return encoded.tobytes()
-```
-
-```python
-# tests/test_transforms.py
-import numpy as np
-import sys
-sys.path.insert(0, "src")
-from data.transforms import get_train_transforms, get_val_transforms
-
-
-def test_train_transforms_output_shape():
-    transforms = get_train_transforms(img_size=512)
-    img = np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8)
-    mask = np.random.randint(0, 2, (480, 640), dtype=np.uint8)
-    result = transforms(image=img, masks=[mask])
-    assert result["image"].shape == (3, 512, 512)
-    assert result["masks"][0].shape == (512, 512)
-
-
-def test_different_augmentation_each_call():
-    """Verify transforms produce different outputs each call (stochastic)."""
-    transforms = get_train_transforms(img_size=512)
-    img = np.random.randint(0, 255, (512, 512, 3), dtype=np.uint8)
-    mask = np.ones((512, 512), dtype=np.uint8)
-
-    result1 = transforms(image=img.copy(), masks=[mask.copy()])
-    result2 = transforms(image=img.copy(), masks=[mask.copy()])
-
-    # With random augmentation, results should differ (not guaranteed but very likely)
-    are_same = np.array_equal(result1["image"].numpy(), result2["image"].numpy())
-    # Not asserting False because there's a tiny chance they're same — just print
-    print(f"Two augmentations identical: {are_same} (expected False most of the time)")
-```
-
----
-
-## 5. Workflow Summary
-
-```
-Developer pushes code
+git tag v* (e.g. v1.0.0)
   ↓
-[ci.yml] runs on every push to main/develop:
-  ├── ruff lint
-  ├── pytest (api + transform tests)
-  └── docker build (verify it compiles)
-
-Developer tags a release (git tag v1.0 && git push origin v1.0)
-  ↓
-[docker.yml] runs:
-  └── build + push → ghcr.io/your-user/mask2former:v1.0
-                   → ghcr.io/your-user/mask2former:latest
+.github/workflows/docker.yml
+  └── build + push → ghcr.io/srnortw/mask2former
 ```
+
+Training stays on **Colab** — CI does not retrain.
 
 ---
 
-## 6. Pull Updated Image on ROS2 Machine
+## What We Actually Built
+
+| File | Purpose |
+|------|---------|
+| `.github/workflows/ci.yml` | Lint, unit tests, Docker build on push/PR to `main` |
+| `.github/workflows/docker.yml` | Push API image to GHCR on `v*` tags (+ manual dispatch) |
+| `requirements-ci.txt` | Minimal deps for CI (numpy, opencv, pymongo, pytest, ruff) |
+| `pyproject.toml` | Ruff + pytest config (`pythonpath = ["."]`) |
+
+### Design choices
+
+- **CI scope** — Ruff/tests cover **serving + monitoring** paths (`api/`, `src/inference.py`, `mongo_logger`, `tests/`), not full training stack (torch, fiftyone, etc.).
+- **No ONNX in pytest** — `test_inference.py` and `test_mongo_logger.py` use mocks/synthetic tensors; no HF download in CI.
+- **No `MONGO_URI` in CI** — Mongo tests mock `MongoClient`; no Atlas secret required for green CI.
+- **Docker build only** — `ci.yml` verifies `api/Dockerfile` compiles; does not run the container.
+- **GHCR on version tags** — `docker.yml` runs on `v*` tags; uses built-in `GITHUB_TOKEN` (no extra `GHCR_TOKEN` secret).
+
+### CI job steps (`ci.yml`)
+
+| Step | Command / action |
+|------|------------------|
+| Python 3.12 | `actions/setup-python@v5` + pip cache |
+| Install | `pip install -r requirements-ci.txt` |
+| Lint | `ruff check api/ tests/ src/inference.py src/mongo_logger.py src/monitoring/ scripts/visualize_predict.py` |
+| Test | `pytest tests/test_inference.py tests/test_mongo_logger.py` |
+| Docker | `docker build -f api/Dockerfile -t mask2former-api:ci .` |
+
+### Repository secrets (optional)
+
+| Secret | Needed for CI? | Used for |
+|--------|----------------|----------|
+| `GITHUB_TOKEN` | Auto (GHCR push) | `docker.yml` package write |
+| `HF_TOKEN` | No | Runtime when pulling model in deployed container |
+| `MONGO_URI` | No | Phase 07 at runtime only |
+| `ROBOFLOW_API_KEY` | No | Colab / local data download |
+
+Add secrets in GitHub → **Settings → Secrets and variables → Actions** when you deploy or need private HF repo access.
+
+### Publish image (release)
 
 ```bash
-# On robot computer or any machine
-docker pull ghcr.io/your-user/mask2former:latest
-
-docker run -d -p 8000:8000 \
-  -e HF_TOKEN="your-token" \
-  ghcr.io/your-user/mask2former:latest
+git tag v1.0.0
+git push origin v1.0.0
 ```
+
+Image: `ghcr.io/srnortw/mask2former:v1.0.0` and `:latest`
+
+Pull on any machine:
+
+```bash
+docker pull ghcr.io/srnortw/mask2former:latest
+docker run -d -p 8000:8000 \
+  -e HF_TOKEN="$HF_TOKEN" \
+  -e MONGO_URI="$MONGO_URI" \
+  ghcr.io/srnortw/mask2former:latest
+```
+
+### Local CI (same as GitHub)
+
+```bash
+cd ~/Desktop/mask2former
+.venv/bin/pip install -r requirements-ci.txt
+
+.venv/bin/ruff check api/ tests/ \
+  src/inference.py src/mongo_logger.py src/monitoring/ \
+  scripts/visualize_predict.py
+
+PYTHONPATH=. .venv/bin/pytest tests/test_inference.py tests/test_mongo_logger.py -q
+
+docker build -f api/Dockerfile -t mask2former-api:ci .
+```
+
+Use **`.venv/bin/pip`** / **`.venv/bin/pytest`** — not system Python.
+
+### Verification
+
+After push to `main`, check **Actions** tab on GitHub for green **CI** workflow.
+
+---
+
+## 1. Workflow files
+
+### `ci.yml` (every push / PR to `main`)
+
+See `.github/workflows/ci.yml` in the repo.
+
+### `docker.yml` (`v*` tags)
+
+See `.github/workflows/docker.yml` in the repo.
+
+---
+
+## 2. Tests in CI
+
+| Test file | What it checks |
+|-----------|----------------|
+| `tests/test_inference.py` | `postprocess_instances` (synthetic logits) |
+| `tests/test_mongo_logger.py` | `PredictionLogger` with mocked MongoDB |
+
+Future (not in CI): full `/predict` integration test would require downloading ONNX in the runner (~90 MB) — skipped for speed.
+
+---
+
+## 3. Optional secrets for production deploy
+
+| Secret | Purpose |
+|--------|---------|
+| `HF_TOKEN` | Private HF model repo |
+| `MONGO_URI` | Atlas **mask2former-mlops** logging |
+| `ROBOFLOW_API_KEY` | Data pipeline (Colab/local) |
 
 ---
 
 ## Summary
 
 | Workflow | Trigger | Action |
-|---|---|---|
-| `ci.yml` | Push to main/develop or PR | Lint + tests + docker build check |
-| `docker.yml` | Push a `v*` tag | Build + push to GHCR |
+|----------|---------|--------|
+| `ci.yml` | Push / PR → `main` | Ruff + pytest + Docker build |
+| `docker.yml` | Tag `v*` or manual | Push image to GHCR |
+
+**Status:** Phase 08 implemented — verify first green run on GitHub Actions after push.
 
 **Next:** [09 — ROS2 Integration](09_ros2.md)

@@ -18,7 +18,7 @@ _ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from src.mongo_logger import try_create_logger
+from src.mongo_logger import try_create_logger  # noqa: E402
 
 
 def build_reference_data(val_ann_path: str) -> pd.DataFrame:

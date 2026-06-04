@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from src.inference import postprocess_instances, DEFAULT_CATEGORIES
+from src.inference import DEFAULT_CATEGORIES, postprocess_instances
 
 
 def test_postprocess_instances_filters_low_score():

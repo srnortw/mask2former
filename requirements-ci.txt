@@ -1,0 +1,8 @@
+# CI: lint + unit tests (no ONNX model download in pytest)
+# Install: pip install -r requirements-ci.txt
+
+numpy>=1.26.0
+opencv-python-headless>=4.9.0
+pymongo>=4.6.0
+pytest>=8.0.0
+ruff>=0.4.0
