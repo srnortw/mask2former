@@ -22,6 +22,10 @@ Training stays on **Colab** — CI does not retrain.
 
 ## What We Actually Built
 
+**Commits:** `4247438` — `feat(cicd): Phase 08 GitHub Actions CI and GHCR docker publish` · `60e8647` — overview paths
+
+**Release tag:** `v1.0.0` (2026-06-04) — first GHCR publish tested with `gh` CLI
+
 | File | Purpose |
 |------|---------|
 | `.github/workflows/ci.yml` | Lint, unit tests, Docker build on push/PR to `main` |
@@ -58,24 +62,53 @@ Training stays on **Colab** — CI does not retrain.
 
 Add secrets in GitHub → **Settings → Secrets and variables → Actions** when you deploy or need private HF repo access.
 
+### Build log — issues and fixes
+
+| Issue | Fix |
+|-------|-----|
+| No `requirements.txt` for CI | Added **`requirements-ci.txt`** (lightweight, no torch/onnx in pytest) |
+| Full `src/` ruff fails on training code | CI lints **serving + monitoring paths only** |
+| Unused imports / import order | Fixed `visualize_predict.py`, `test_mongo_logger.py`, `test_inference.py` |
+| `drift_report.py` E402 | `# noqa: E402` on import after `sys.path` setup |
+| Doc assumed `GHCR_TOKEN` secret | Uses built-in **`GITHUB_TOKEN`** with `packages: write` |
+
+### Verification (2026-06-04) — Phase 08 complete
+
+| Check | Result |
+|-------|--------|
+| Local: ruff + pytest + `docker build` | All passed (5 tests) |
+| GitHub **CI** on push `main` | **success** (~45–52s), runs `26971432292`, `26971461777` |
+| Tag **`v1.0.0`** pushed | `git push origin v1.0.0` |
+| GitHub **Build and Push Docker Image** | **success** (~1m 9s), run `26971718372` |
+| GHCR image | `ghcr.io/srnortw/mask2former:1.0.0`, `:1.0`, `:latest` |
+| Verified with | `gh run watch`, `gh run list` |
+
 ### Publish image (release)
 
 ```bash
-git tag v1.0.0
+git tag -a v1.0.0 -m "Release v1.0.0"
 git push origin v1.0.0
+
+# Watch workflow
+gh run list --workflow="Build and Push Docker Image"
+gh run watch
 ```
 
-Image: `ghcr.io/srnortw/mask2former:v1.0.0` and `:latest`
+Image tags on GHCR (semver metadata): `1.0.0`, `1.0`, `latest`
 
 Pull on any machine:
 
 ```bash
-docker pull ghcr.io/srnortw/mask2former:latest
+# If package is private: echo $GITHUB_TOKEN | docker login ghcr.io -u USERNAME --password-stdin
+docker pull ghcr.io/srnortw/mask2former:1.0.0
+
 docker run -d -p 8000:8000 \
   -e HF_TOKEN="$HF_TOKEN" \
   -e MONGO_URI="$MONGO_URI" \
-  ghcr.io/srnortw/mask2former:latest
+  ghcr.io/srnortw/mask2former:1.0.0
 ```
+
+If `docker pull` is denied, set package visibility to **Public** under GitHub → Packages → mask2former.
 
 ### Local CI (same as GitHub)
 
@@ -94,11 +127,16 @@ docker build -f api/Dockerfile -t mask2former-api:ci .
 
 Use **`.venv/bin/pip`** / **`.venv/bin/pytest`** — not system Python.
 
-### Verification
+### Monitor with GitHub CLI
 
-After push to `main`, check **Actions** tab on GitHub for green **CI** workflow.
+```bash
+gh run list --repo srnortw/mask2former
+gh run watch                    # latest run
+gh run view --web               # open in browser
+```
 
 ---
+
 
 ## 1. Workflow files
 
@@ -140,6 +178,6 @@ Future (not in CI): full `/predict` integration test would require downloading O
 | `ci.yml` | Push / PR → `main` | Ruff + pytest + Docker build |
 | `docker.yml` | Tag `v*` or manual | Push image to GHCR |
 
-**Status:** Phase 08 implemented — verify first green run on GitHub Actions after push.
+**Status:** Phase 08 **complete** (2026-06-04). CI green on `main`; **`v1.0.0`** published to GHCR.
 
 **Next:** [09 — ROS2 Integration](09_ros2.md)
