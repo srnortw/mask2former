@@ -153,9 +153,11 @@ mask2former/
 ├── dvc.yaml                     # DVC pipeline stages
 ├── params.yaml                  # hyperparameters
 ├── requirements.txt             # local venv only (no torch)
-└── .github/
-    └── workflows/
-        └── ci.yml
+└── .github/workflows/
+    ├── ci.yml                   # lint + pytest + docker build
+    └── docker.yml               # push to GHCR on v* tags
+├── requirements-ci.txt          # GitHub Actions test deps
+├── pyproject.toml               # ruff + pytest config
 ```
 
 ---
