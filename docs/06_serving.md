@@ -113,7 +113,8 @@ Response also includes: `image_id`, `instances`, `inference_ms` (ONNX only), `mo
 | `MODEL_FILE` | `mask2former_int8.onnx` | ONNX file in repo |
 | `LOCAL_ONNX_PATH` | (empty) | Skip HF download if set |
 | `IMG_SIZE` | `512` | Input resize |
-| `CONF_THRESH` | `0.5` | Score threshold |
+| `CONF_THRESH` | `0.5` | Score threshold (env default) |
+| `?conf_threshold=` | — | Per-request override on `POST /predict` (used by ROS2 client) |
 | `CATEGORIES` | built-in lane map | Optional JSON override |
 | `MONGO_URI` | (empty) | Phase 07 — optional prediction logging |
 
@@ -151,11 +152,13 @@ Uses local **`.venv`** for `requests` + OpenCV (not the API container):
 cd ~/Desktop/mask2former
 .venv/bin/pip install requests opencv-python-headless   # if missing
 
-.venv/bin/python scripts/visualize_predict.py data/raw/valid/<image>.jpg \
-  -o reports/predict_overlay.jpg
+.venv/bin/python scripts/visualize_predict.py data/raw/valid/<image>.jpg reports/my_overlay.jpg
+# or: ./scripts/predict_image.sh <image>.jpg reports/my_overlay.jpg
+# optional stricter filter: ... reports/out.jpg 0.65
 ```
 
-Default URL: `http://localhost:8000/predict` (`--url` to override).
+Default URL: `http://localhost:8000/predict` (`--url` to override).  
+Input/output paths: `visualize_predict.py INPUT.jpg OUTPUT.jpg` or `./scripts/predict_image.sh INPUT.jpg OUTPUT.jpg [conf_threshold]`.
 
 ---
 

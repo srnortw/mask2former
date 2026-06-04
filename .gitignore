@@ -38,3 +38,8 @@ Thumbs.db
 
 # IDE
 .vscode/
+
+# ROS2 colcon (sources live under ros2_ws/src/)
+ros2_ws/build/
+ros2_ws/install/
+ros2_ws/log/

@@ -1,0 +1,18 @@
+mask2former_client:
+  ros__parameters:
+    server_url: "http://localhost:8000"
+    predict_path: "/predict"
+    input_topic: "/camera/image_raw"
+    output_topic: "/perception/instance_masks"
+    publish_viz: true
+    request_timeout_sec: 120.0
+    jpeg_quality: 90
+    skip_if_busy: true
+    conf_threshold: 0.5
+
+publish_test_image:
+  ros__parameters:
+    image_path: ""
+    topic: "/camera/image_raw"
+    rate_hz: 1.0
+    frame_id: "camera"

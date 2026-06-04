@@ -51,8 +51,8 @@ Do not use the old **Computer_vision** Atlas project / **Cluster0** for this pip
       MLflow experiment tracking
 
 [04] ONNX Export + INT8 Quantization
-      .pth → ONNX (fp32) → INT8 static quantization
-      FiftyOne visual evaluation
+      .pth → ONNX (fp32) → INT8 → FiftyOne mAP (valid+test, fp32 vs INT8)
+      Phase 3 evaluate.py = PyTorch on val during training
 
 [05] Model Registry
       Hugging Face Hub + MLflow Model Registry
@@ -66,8 +66,9 @@ Do not use the old **Computer_vision** Atlas project / **Cluster0** for this pip
 [08] CI/CD
       GitHub Actions (test → build → push Docker image)
 
-[09] ROS2 Integration
-      segmentation_node subscribing to camera topic
+[09] ROS2 Integration (Mode A done)
+      Jazzy HTTP client → Docker FastAPI → /perception topics
+      Mode B embedded ONNX + on-robot deploy — later
 ```
 
 ---
@@ -127,6 +128,7 @@ mask2former/
 │   ├── evaluate.py
 │   ├── export_onnx.py
 │   ├── quantize_int8.py
+│   ├── evaluate_onnx_fiftyone.py  # Phase 4 FiftyOne (valid/test)
 │   ├── mongo_logger.py
 │   └── monitoring/drift_report.py
 ├── api/
@@ -139,14 +141,17 @@ mask2former/
 │   ├── setup_atlas_mongo.sh     # Atlas project mask2former-mlops
 │   ├── seed_predictions.sh      # batch /predict → MongoDB
 │   ├── run_drift_report.sh      # Evidently drift (uses .venv)
-│   └── visualize_predict.py
+│   ├── visualize_predict.py     # INPUT.jpg OUTPUT.jpg → API overlay
+│   ├── predict_image.sh         # wrapper for visualize_predict
+│   ├── build_ros2.sh            # colcon + .venv
+│   ├── run_ros2_mode_a.sh
+│   └── test_ros2_mode_a_once.sh
 ├── requirements-monitoring.txt
 ├── tests/test_inference.py
 ├── tests/test_mongo_logger.py
-├── ros2_ws/
-│   └── src/mask2former_ros/
-│       ├── segmentation_node.py
-│       └── package.xml
+├── ros2_ws/                     # Phase 09 — Jazzy; build via scripts/build_ros2.sh (.venv)
+│   └── src/mask2former_ros/     # Mode A: segmentation_client (HTTP → Docker API)
+├── requirements-ros2-client.txt # .venv/bin/pip install -r …
 ├── notebooks/                   # Colab training notebooks
 ├── tests/
 ├── .dvc/

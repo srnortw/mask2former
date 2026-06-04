@@ -1,0 +1,6 @@
+# Mode A ROS2 client pip deps — install in project venv only:
+#   .venv/bin/pip install -r requirements-ros2-client.txt
+# numpy<2 required for cv_bridge (ROS2 Jazzy)
+requests>=2.31.0
+opencv-python-headless>=4.8.0
+numpy>=1.24.0,<2

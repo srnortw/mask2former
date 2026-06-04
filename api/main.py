@@ -9,7 +9,7 @@ import sys
 from contextlib import asynccontextmanager
 from typing import List
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -90,11 +90,20 @@ def health():
         "hf_repo": HF_REPO_ID,
         "loaded": session is not None,
         "mongodb": mongo_logger is not None,
+        "conf_threshold": CONF_THRESH,
     }
 
 
 @app.post("/predict", response_model=PredictResponse)
-async def predict(file: UploadFile = File(...)):
+async def predict(
+    file: UploadFile = File(...),
+    conf_threshold: float | None = Query(
+        None,
+        ge=0.0,
+        le=1.0,
+        description="Min class score (overrides CONF_THRESH env for this request)",
+    ),
+):
     if session is None:
         raise HTTPException(status_code=503, detail="Model not loaded")
 
@@ -102,12 +111,14 @@ async def predict(file: UploadFile = File(...)):
     if not image_bytes:
         raise HTTPException(status_code=400, detail="Empty file")
 
+    score_threshold = conf_threshold if conf_threshold is not None else CONF_THRESH
+
     try:
         instances, inference_ms = run_inference(
             session,
             image_bytes,
             img_size=IMG_SIZE,
-            score_threshold=CONF_THRESH,
+            score_threshold=score_threshold,
             categories=categories,
         )
     except ValueError as e:

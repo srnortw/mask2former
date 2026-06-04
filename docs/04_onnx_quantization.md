@@ -73,6 +73,7 @@ HuggingFace Hub + Google Drive backup
 |---|---|
 | `src/export_onnx.py` | ONNX wrapper, fp32 export, verify |
 | `src/quantize_int8.py` | `MaskCalibrationReader`, selective static INT8, benchmark |
+| `src/evaluate_onnx_fiftyone.py` | FiftyOne mAP on **valid + test** for fp32 vs INT8 ONNX |
 
 ---
 
@@ -103,6 +104,20 @@ Benchmark on Colab CPU:
 
 ---
 
+### When to evaluate what (recommendation)
+
+| Stage | Tool | Split | Purpose |
+|-------|------|-------|---------|
+| **Phase 3 training** | `src/evaluate.py` (PyTorch + pycocotools) | **valid** | Pick `best_model.pth`, MLflow mAP — **keep as-is** |
+| **Phase 4 after Cell 16** | FiftyOne + **fp32 ONNX** | **valid + test** | Confirm export did not break the model |
+| **Phase 4 after Cell 17** | FiftyOne + **int8 ONNX** | **valid + test** | Confirm quantized model is OK to ship (HF/Docker) |
+
+You do **not** need FiftyOne on raw PyTorch if `evaluate.py` already ran at the end of training. Phase 4 FiftyOne answers: *“Are the ONNX files we publish good?”* — compare **fp32 vs INT8** in the App (PR curves, per-class AP, TP/FP/FN patches).
+
+**Order in Colab:** Cell 16 (fp32) → Cell 17 (INT8) → **Cell 19 (FiftyOne)** → Cell 20 (push to HF).
+
+---
+
 ### Colab Cells
 
 | Cell | Purpose |
@@ -111,7 +126,44 @@ Benchmark on Colab CPU:
 | 15 | Download `best_model.pth` from HF Hub (after restart) |
 | 16 | Export fp32 ONNX (opset 16, `dynamo=False`) + verify |
 | 17 | Selective static INT8 + benchmark |
-| 18 | Push `fp32.onnx` + `int8.onnx` → HF Hub + Drive |
+| 19 | **FiftyOne:** valid + test, fp32 vs INT8 mAP + App (PR/AP plots) |
+| 20 | Push `fp32.onnx` + `int8.onnx` → HF Hub + Drive |
+
+**Cell 19** (`src/evaluate_onnx_fiftyone.py`):
+
+```python
+from src.evaluate_onnx_fiftyone import run_phase4_evaluation
+
+summary = run_phase4_evaluation(
+    fp32_onnx_path=os.path.join(CKPT, "mask2former_fp32.onnx"),
+    int8_onnx_path=os.path.join(CKPT, "mask2former_int8.onnx"),
+    splits=["valid", "test"],
+    raw_dir=os.path.join(ROOT, "data/raw"),
+    score_threshold=0.5,
+    max_samples=None,  # or 50 for quick Colab
+    launch_app=True,
+)
+```
+
+Local (if ONNX + data on disk):
+
+```bash
+.venv/bin/pip install fiftyone
+.venv/bin/python -m src.evaluate_onnx_fiftyone \
+  --fp32 checkpoints/mask2former_fp32.onnx \
+  --int8 checkpoints/mask2former_int8.onnx \
+  --splits valid test
+```
+
+---
+
+### FiftyOne evaluation details
+
+- **Splits:** `data/raw/valid`, `data/raw/test` (Roboflow COCO folders).
+- **Ground truth:** `ground_truth` (from COCO import).
+- **Predictions:** `predictions_fp32`, `predictions_int8` (masks + boxes).
+- **Metrics:** COCO-style mask mAP (`use_masks=True`, `compute_mAP=True`) — should align with `evaluate.py` when threshold/postprocess match.
+- **UI:** FiftyOne App → Evaluations tab for PR curves; filter TP/FP/FN per eval key.
 
 ---
 
@@ -147,6 +199,7 @@ masks_logits, class_logits = session.run(None, {"pixel_values": inp})
 | Export fp32 | `torch.onnx.export` opset 16, `dynamo=False` | `mask2former_fp32.onnx` (284 MB) |
 | Verify | `onnxruntime` | max diff < 0.001 ✅ |
 | Quantize | selective static QInt8/QUInt8, Conv/MatMul/Gemm | `mask2former_int8.onnx` (82 MB) |
+| Evaluate | FiftyOne (valid + test, fp32 vs INT8) | mAP report + visual QA in App |
 | Storage | HF Hub + Google Drive | versioned artifacts |
 
 **Next:** [05 — Model Registry](05_model_registry.md)

@@ -10,7 +10,7 @@ services:
       - HF_TOKEN=${HF_TOKEN:-}
       - MODEL_FILE=mask2former_int8.onnx
       - IMG_SIZE=512
-      - CONF_THRESH=0.5
+      - CONF_THRESH=${CONF_THRESH:-0.5}
       # MongoDB Atlas project: mask2former-mlops | cluster: mask2former-cluster
       - MONGO_URI=${MONGO_URI:-}
       - MONGO_DB_NAME=${MONGO_DB_NAME:-mask2former}
