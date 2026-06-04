@@ -115,7 +115,11 @@ mask2former/
 │   └── mongo_logger.py
 ├── api/
 │   ├── main.py                  # FastAPI app
-│   └── Dockerfile
+│   ├── Dockerfile
+│   └── requirements-api.txt
+├── src/inference.py             # ONNX preprocess + postprocess (serving / ROS2)
+├── docker-compose.yml
+├── tests/test_inference.py
 ├── ros2_ws/
 │   └── src/mask2former_ros/
 │       ├── segmentation_node.py

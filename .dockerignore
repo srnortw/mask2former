@@ -1,0 +1,10 @@
+.venv
+.git
+data
+checkpoints
+notebooks/.ipynb_checkpoints
+__pycache__
+*.pth
+mlruns
+.env
+.vscode

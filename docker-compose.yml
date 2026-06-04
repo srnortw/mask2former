@@ -1,0 +1,16 @@
+services:
+  mask2former-api:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - HF_REPO_ID=srnortw/mask2former-lane-seg
+      - HF_TOKEN=${HF_TOKEN:-}
+      - MODEL_FILE=mask2former_int8.onnx
+      - IMG_SIZE=512
+      - CONF_THRESH=0.5
+      # Optional: skip HF download if file is mounted
+      # - LOCAL_ONNX_PATH=/models/mask2former_int8.onnx
+    restart: unless-stopped

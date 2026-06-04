@@ -3,18 +3,97 @@
 ## Overview
 
 ```
-mask2former_int8.onnx (pulled from Hugging Face Hub at startup)
+mask2former_int8.onnx (Hugging Face Hub or LOCAL_ONNX_PATH)
   ↓
-FastAPI app  →  POST /predict  →  returns instance masks as JSON
+src/inference.py  →  preprocess + ONNX run + postprocess (same logic as evaluate.py)
   ↓
-Docker container (portable, runs on local machine or robot's compute)
+api/main.py       →  FastAPI  GET /health  POST /predict
   ↓
-ROS2 node calls HTTP endpoint  OR  loads ONNX directly (see 09_ros2.md)
+Docker / docker-compose  →  port 8000
+  ↓
+ROS2 (Phase 09)   →  HTTP client or embedded ONNX
 ```
 
 ---
 
-## 1. FastAPI Inference Server
+## What We Actually Built
+
+| File | Purpose |
+|------|---------|
+| `src/inference.py` | Preprocess, ONNX session, postprocess (numpy; reusable in ROS2) |
+| `api/main.py` | FastAPI app with lifespan model load |
+| `api/requirements-api.txt` | Serving dependencies (no PyTorch) |
+| `api/Dockerfile` | `python:3.12-slim` + ONNX Runtime |
+| `docker-compose.yml` | Local run with env vars |
+| `tests/test_inference.py` | Postprocess unit tests |
+
+### ONNX I/O (matches `export_onnx.py`)
+
+| | Name |
+|--|------|
+| Input | `pixel_values` `[1, 3, 512, 512]` |
+| Outputs | `masks_queries_logits`, `class_queries_logits` |
+
+Postprocessing: sigmoid on masks, softmax on classes (exclude no-object), threshold, resize masks to original image size.
+
+### Environment variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `HF_REPO_ID` | `srnortw/mask2former-lane-seg` | HF model repo |
+| `HF_TOKEN` | (empty) | HF token if repo is private |
+| `MODEL_FILE` | `mask2former_int8.onnx` | ONNX filename in repo |
+| `LOCAL_ONNX_PATH` | (empty) | If set, skip HF download |
+| `IMG_SIZE` | `512` | Input resize |
+| `CONF_THRESH` | `0.5` | Score threshold |
+
+---
+
+## 1. Run locally (venv)
+
+```bash
+cd ~/Desktop/mask2former
+source .venv/bin/activate
+pip install -r api/requirements-api.txt
+
+export HF_REPO_ID=srnortw/mask2former-lane-seg
+export HF_TOKEN=your_hf_token   # if needed
+# Or use a local ONNX file:
+# export LOCAL_ONNX_PATH=/path/to/mask2former_int8.onnx
+
+uvicorn api.main:app --host 0.0.0.0 --port 8000 --app-dir .
+# Note: run from repo root so `src` imports work (PYTHONPATH=. )
+```
+
+```bash
+curl http://localhost:8000/health
+
+curl -X POST http://localhost:8000/predict \
+  -F "file=@/path/to/lane_image.jpg" | python3 -m json.tool
+```
+
+---
+
+## 2. Docker
+
+```bash
+docker compose build
+HF_TOKEN=your_token docker compose up
+```
+
+Or:
+
+```bash
+docker build -f api/Dockerfile -t mask2former-api .
+docker run -p 8000:8000 \
+  -e HF_REPO_ID=srnortw/mask2former-lane-seg \
+  -e HF_TOKEN=$HF_TOKEN \
+  mask2former-api:latest
+```
+
+---
+
+## 3. FastAPI reference (implementation)
 
 ```python
 # api/main.py
