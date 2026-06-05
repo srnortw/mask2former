@@ -168,16 +168,21 @@ git push
 | Path on Drive | Purpose |
 |---------------|---------|
 | `files/` | DVC remote storage (dataset cache — from `dvc push`) |
-| `checkpoints/` | Optional manual backups (Colab Cells 11/18) |
-| ~~`mask2former/`~~ | **Not used** — was a one-time whole-repo copy; safe to delete |
+| `data/raw/` | Roboflow dataset (Colab Cell 5 or local download) |
+| `checkpoints/` | `.pth`, `.onnx` from Colab training/export |
+| ~~`mask2former/`~~ | **Delete** — old git clone on Drive; code is GitHub + `/content/mask2former` in Colab |
 
 Check contents: `rclone lsd gdrive:mask2former-mlops`
 
-We do **not** sync the full project to Drive. Code → GitHub. Colab → `git pull` + Roboflow + HF Hub.
+We do **not** sync the full project to Drive. **Code → GitHub.** Colab clones to `/content/mask2former`; Drive = artifacts only.
 
-### Colab: code via Git, data via Roboflow
+### Colab: open from GitHub, artifacts on Drive
 
-Colab does not use `dvc pull` for this project. Sync scripts with `git pull`; download data with Roboflow (notebook Cell 4).
+1. Open: https://colab.research.google.com/github/srnortw/mask2former/blob/main/notebooks/train_colab.ipynb  
+2. Cell 4: `drive.mount` → `mask2former-mlops/data`, `checkpoints`  
+3. Cell 5: `git clone`/`pull` → `/content/mask2former` + Roboflow if `data/raw` missing  
+
+Colab does not use `dvc pull` for training. Local PC may use DVC + rclone for the same Drive folder.
 
 ---
 

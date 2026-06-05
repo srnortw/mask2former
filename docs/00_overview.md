@@ -12,7 +12,7 @@ The name **`mask2former-mlops`** is used consistently for cloud resources (not t
 
 | Where | What |
 |-------|------|
-| **Google Drive** | `mask2former-mlops/` — `data/raw/`, `checkpoints/`, git clone at `mask2former-mlops/mask2former/` |
+| **Google Drive** | `mask2former-mlops/` — `data/raw/`, `checkpoints/` (code on GitHub, not Drive) |
 | **MongoDB Atlas** | Project **`mask2former-mlops`** — cluster **`mask2former-cluster`**, DB **`mask2former`** |
 | **GitHub** | Repo `srnortw/mask2former` (code only) |
 

@@ -99,8 +99,8 @@ all parameters                           → trainable
 | 1 | Verify GPU (CUDA, VRAM, torch version) |
 | 2 | Install dependencies (transformers, mlflow, albumentations, etc.) |
 | 3 | Load secrets from Colab secret manager |
-| 4 | Mount Drive, `git fetch` + `reset --hard origin/main`, `skip-worktree` on notebook |
-| 5 | First-time `git clone` + Roboflow → `mask2former-mlops/data/raw` |
+| 4 | `drive.mount` — set `CHECKPOINT_DIR` / `DATA_DIR` on `mask2former-mlops/` |
+| 5 | `git clone` or `pull` → `/content/mask2former` + Roboflow → Drive `data/raw` |
 | 6 | Load config, point checkpoints/data/onnx paths to Drive, build DataLoaders |
 | 7 | Build model + verify phase freezing + sanity forward pass |
 | 8 | Test MLflow connection to DagsHub |
@@ -110,9 +110,11 @@ all parameters                           → trainable
 | 14–18 | ONNX export + INT8 + push to HF |
 | 20 | MLflow registry + model card |
 
-**Git on Drive:** Colab saves outputs into `train_colab.ipynb`, which dirties git. Cell 4 resets code to GitHub and sets `skip-worktree` on the notebook so sync stays reliable. Checkpoints/data live **outside** the repo (`mask2former-mlops/checkpoints/`, `data/`).
+**Colab session flow:** Open notebook **from GitHub** (not a stale Drive copy). Cell 5 syncs code to `/content/mask2former`; Drive holds only **data** and **checkpoints** (`mask2former-mlops/`). Re-run Cell 5 after pushing from PC to pick up new `src/` code.
 
-**Desktop:** Clear notebook outputs before committing (or use `nbstripout`) so GitHub stays clean.
+**Desktop:** Edit notebook locally → push GitHub → new Colab session or re-run Cell 5. Clear outputs before commit (`nbstripout`) if needed.
+
+**Colab link:** https://colab.research.google.com/github/srnortw/mask2former/blob/main/notebooks/train_colab.ipynb
 
 ### Colab Secrets Required
 
@@ -166,7 +168,7 @@ if os.path.exists(last_ckpt_path):
 
 In Colab, copy checkpoints to Drive after each session:
 ```python
-# Checkpoints are written directly to Drive (Cell 5 sets cfg.model.checkpoint_dir):
+# Checkpoints are written directly to Drive (Cells 4–6 set cfg.model.checkpoint_dir):
 #   /content/drive/MyDrive/mask2former-mlops/checkpoints/
 ```
 

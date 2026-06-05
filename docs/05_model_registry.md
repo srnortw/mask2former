@@ -46,7 +46,7 @@ Registered → Staging (auto) → Production (manual, after ROS2 validation)
 - Colab ships **MLflow 3.x** — model registry API changed vs MLflow 2
 - `log_artifact("best_model.pth")` alone **cannot** be registered
 - Must use `mlflow.pytorch.log_model(..., name="model")` → register via `models:/<model_id>` URI
-- `register_model.py` version banner: `mlflow3-v2` (confirm Cell 4 git sync loaded latest code)
+- `register_model.py` version banner: `mlflow3-v2` (confirm Cell 5 git sync loaded latest code)
 
 ---
 
@@ -80,12 +80,12 @@ Paths on Drive: `/content/drive/MyDrive/mask2former-mlops/checkpoints/`
 |-------|--------|-----|
 | `Unable to find logged_model ... checkpoints` | Registered from `runs:/.../checkpoints` (raw `.pth` artifact) | Log with `mlflow.pytorch.log_model`, register from `model/` |
 | `Unable to find logged_model ... model` + `artifact_path` deprecated | Used `artifact_path="model"` (MLflow 2 style) | Use `name="model"` + `registered_model_name` or `models:/` URI |
-| Stale code in Colab kernel | Old `register_model.py` cached after `git pull` | Cell 20: `git pull` + `importlib.reload`; Cell 4: `reset --hard` |
+| Stale code in Colab kernel | Old `register_model.py` cached after `git pull` | Cell 20: `git pull` + `importlib.reload`; re-run Cell 5 |
 | `class_predictor` MISMATCH on load | COCO 81-class head vs 5 lane classes | Expected — checkpoint weights still load correctly |
 
 ### Colab prerequisites for Cell 20
 
-1. Cells **1–4** (secrets, Drive mount, `git sync`)
+1. Cells **1–5** (secrets, Drive mount, `git clone` to `/content/mask2former`)
 2. Cell **5** if first-time clone / Roboflow data
 3. ONNX on Drive: `mask2former_fp32.onnx`, `mask2former_int8.onnx` (Cells 14–18)
 4. `last_checkpoint.pth` with `mlflow_run_id` on Drive
