@@ -25,7 +25,8 @@ from src.evaluate_onnx import (
 )
 from src.inference import create_session, postprocess_instances, preprocess_image_rgb
 
-DEFAULT_MAX_SAMPLES = 25
+DEFAULT_MAX_SAMPLES = 15
+REVIEW_CODE_VERSION = "fo-review-v3"
 
 
 def _require_fiftyone():
@@ -56,9 +57,16 @@ def _load_category_names(ann_path: str) -> dict[int, str]:
 
 
 def _model_label_names(cat_names: dict[int, str]) -> dict[int, str]:
-    """Map model output index (0-based) → COCO category name."""
-    max_id = max(cat_names.keys()) if cat_names else 0
-    return {i: cat_names.get(i + 1, str(i)) for i in range(max_id)}
+    """
+    Map model output index (0-based) → Roboflow COCO category name.
+
+    Model class 0 = COCO category_id 1, etc. Must match ground_truth labels
+    exactly or FiftyOne eval reports 0.00 for every class.
+    """
+    if not cat_names:
+        return {}
+    sorted_ids = sorted(cat_names.keys())
+    return {i: cat_names[sorted_ids[i]] for i in range(len(sorted_ids))}
 
 
 def _bbox_from_mask(mask: np.ndarray) -> tuple[float, float, float, float] | None:
@@ -197,7 +205,7 @@ def _combine_datasets(datasets: list, splits: list[str]):
 
     combined = datasets[0]
     for ds in datasets[1:]:
-        combined.add_samples(ds)
+        combined.add_samples(ds.iter_samples())
     print(f"Combined dataset '{combined.name}': {len(combined)} samples ({', '.join(splits)})")
     return combined
 
@@ -236,7 +244,7 @@ def run_visual_review(
     img_size: int = 512,
     score_threshold: float = 0.5,
     launch_app: bool = True,
-    run_eval: bool = True,
+    run_eval: bool = False,
     gt_field: str = "ground_truth",
 ) -> dict[str, Any]:
     """
@@ -246,6 +254,7 @@ def run_visual_review(
     the notebook so the App stays connected.
     """
     splits = list(splits or DEFAULT_SPLITS)
+    print(f"fiftyone_onnx_review [{REVIEW_CODE_VERSION}]")
     assert_onnx_artifacts(fp32_onnx_path, int8_onnx_path)
 
     for split in splits:
@@ -273,6 +282,12 @@ def run_visual_review(
             label_names=label_names,
         )
 
+        n_fp32 = sum(len(s.predictions_fp32.detections) for s in dataset if s.predictions_fp32)
+        n_int8 = sum(len(s.predictions_int8.detections) for s in dataset if s.predictions_int8)
+        print(f"  predictions: fp32={n_fp32}  int8={n_int8}  labels={list(label_names.values())}")
+
+        _tag_split(dataset, split)
+
         if run_eval:
             evaluate_subset(dataset, "predictions_fp32", f"eval_fp32_{split}", gt_field)
             evaluate_subset(dataset, "predictions_int8", f"eval_int8_{split}", gt_field)
@@ -282,13 +297,12 @@ def run_visual_review(
     session = None
     combined = None
     if launch_app and datasets:
-        combined = datasets[0]
-        for ds in datasets[1:]:
-            combined.merge(ds)
+        combined = _combine_datasets(datasets, splits)
 
         print("\nFiftyOne App fields:")
         print(f"  • {gt_field}  (Roboflow COCO labels)")
         print("  • predictions_fp32 / predictions_int8")
+        print(f"  • tags: {splits}  (filter valid / test in App)")
         print("  Evaluations tab → filter TP / FP / FN per model")
         session = fo.launch_app(combined)
         _colab_app_hint(session)

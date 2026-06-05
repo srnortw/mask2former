@@ -91,13 +91,16 @@ def preprocess_image_bytes(
 
 
 def _sigmoid(x: np.ndarray) -> np.ndarray:
-    return 1.0 / (1.0 + np.exp(-x))
+    x = np.clip(x.astype(np.float64), -50.0, 50.0)
+    return (1.0 / (1.0 + np.exp(-x))).astype(np.float32)
 
 
 def _softmax(x: np.ndarray, axis: int = -1) -> np.ndarray:
+    x = x.astype(np.float64)
     x = x - np.max(x, axis=axis, keepdims=True)
+    x = np.clip(x, -50.0, 50.0)
     e = np.exp(x)
-    return e / np.sum(e, axis=axis, keepdims=True)
+    return (e / np.sum(e, axis=axis, keepdims=True)).astype(np.float32)
 
 
 def postprocess_instances(
@@ -125,7 +128,7 @@ def postprocess_instances(
 
     for q in range(masks.shape[0]):
         score = float(scores[q])
-        if score < score_threshold:
+        if not np.isfinite(score) or score < score_threshold:
             continue
 
         mask_resized = cv2.resize(
@@ -182,7 +185,7 @@ def postprocess_to_coco_results(
     results = []
     for q in range(masks.shape[0]):
         score = float(scores[q])
-        if score < score_threshold:
+        if not np.isfinite(score) or score < score_threshold:
             continue
 
         mask_resized = cv2.resize(
