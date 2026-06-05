@@ -178,6 +178,30 @@ def attach_onnx_predictions(
         sample.save()
 
 
+def _tag_split(dataset, split: str) -> None:
+    """Tag samples so valid/test can be filtered in the FiftyOne App."""
+    for sample in dataset:
+        tags = list(sample.tags or [])
+        if split not in tags:
+            tags.append(split)
+            sample.tags = tags
+            sample.save()
+
+
+def _combine_datasets(datasets: list, splits: list[str]):
+    """Combine per-split datasets (FiftyOne has no Dataset.merge())."""
+    if not datasets:
+        return None
+    if len(datasets) == 1:
+        return datasets[0]
+
+    combined = datasets[0]
+    for ds in datasets[1:]:
+        combined.add_samples(ds)
+    print(f"Combined dataset '{combined.name}': {len(combined)} samples ({', '.join(splits)})")
+    return combined
+
+
 def evaluate_subset(
     dataset,
     pred_field: str,
