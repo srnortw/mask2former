@@ -64,6 +64,19 @@ def resolve_model_path(
     )
 
 
+def preprocess_image_rgb(
+    img_rgb: np.ndarray,
+    img_size: int = 512,
+) -> tuple[np.ndarray, int, int]:
+    """Resize + ImageNet normalize an RGB image for ONNX input."""
+    orig_h, orig_w = img_rgb.shape[:2]
+    resized = cv2.resize(img_rgb, (img_size, img_size))
+    normalized = resized.astype(np.float32) / 255.0
+    normalized = (normalized - IMAGENET_MEAN) / IMAGENET_STD
+    tensor = normalized.transpose(2, 0, 1)[np.newaxis].astype(np.float32)
+    return tensor, orig_h, orig_w
+
+
 def preprocess_image_bytes(
     image_bytes: bytes,
     img_size: int = 512,
@@ -74,14 +87,7 @@ def preprocess_image_bytes(
         raise ValueError("Could not decode image bytes")
 
     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    orig_h, orig_w = img.shape[:2]
-
-    resized = cv2.resize(img, (img_size, img_size))
-    normalized = resized.astype(np.float32) / 255.0
-    normalized = (normalized - IMAGENET_MEAN) / IMAGENET_STD
-    tensor = normalized.transpose(2, 0, 1)[np.newaxis].astype(np.float32)
-
-    return tensor, orig_h, orig_w
+    return preprocess_image_rgb(img, img_size)
 
 
 def _sigmoid(x: np.ndarray) -> np.ndarray:
@@ -150,6 +156,54 @@ def postprocess_instances(
         instance_id += 1
 
     return instances
+
+
+def postprocess_to_coco_results(
+    masks_queries_logits: np.ndarray,
+    class_queries_logits: np.ndarray,
+    orig_h: int,
+    orig_w: int,
+    image_id: int,
+    score_threshold: float = 0.5,
+) -> list[dict[str, Any]]:
+    """
+    Convert ONNX outputs to COCO detection results (segmentation RLE).
+    category_id is 1-indexed to match Roboflow COCO annotations.
+    """
+    from pycocotools import mask as coco_mask
+
+    masks = _sigmoid(masks_queries_logits)[0]
+    logits = class_queries_logits[0]
+    probs = _softmax(logits[:, :-1], axis=-1)
+    scores = probs.max(axis=-1)
+    labels = probs.argmax(axis=-1)
+
+    results = []
+    for q in range(masks.shape[0]):
+        score = float(scores[q])
+        if score < score_threshold:
+            continue
+
+        mask_resized = cv2.resize(
+            masks[q].astype(np.float32),
+            (orig_w, orig_h),
+            interpolation=cv2.INTER_LINEAR,
+        )
+        binary = (mask_resized > 0.5).astype(np.uint8)
+        if not binary.any():
+            continue
+
+        rle = coco_mask.encode(np.asfortranarray(binary))
+        rle["counts"] = rle["counts"].decode("utf-8")
+
+        results.append({
+            "image_id": image_id,
+            "category_id": int(labels[q]) + 1,
+            "segmentation": rle,
+            "score": score,
+        })
+
+    return results
 
 
 def run_inference(

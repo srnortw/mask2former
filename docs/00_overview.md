@@ -128,7 +128,8 @@ mask2former/
 │   ├── evaluate.py
 │   ├── export_onnx.py
 │   ├── quantize_int8.py
-│   ├── evaluate_onnx_fiftyone.py  # Phase 4 FiftyOne (valid/test)
+│   ├── evaluate_onnx.py           # Phase 4 fast mAP (valid/test)
+│   ├── fiftyone_onnx_review.py    # Local FiftyOne visual QA (subset)
 │   ├── mongo_logger.py
 │   └── monitoring/drift_report.py
 ├── api/
