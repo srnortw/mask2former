@@ -112,11 +112,10 @@ Benchmark on Colab CPU:
 | **Phase 3 training** | `src/evaluate.py` (PyTorch + pycocotools) | **valid** | Pick `best_model.pth`, MLflow mAP — **keep as-is** |
 | **Phase 4 after Cells 16–17** | `evaluate_onnx.py` (pycocotools) | **valid + test** | Confirm fp32 export + INT8 before HF push |
 
-You do **not** need FiftyOne in Colab. Phase 4 `evaluate_onnx.py` prints **fp32 vs INT8 mAP** per split (`valid`, `test`).
+**Cell 18** — `run_phase4_report()`: mAP, AP50, AP75, AR, per-class AP, plots + JSON → Drive `checkpoints/eval_reports/`.  
+**Cell 19** — `fiftyone_onnx_review.py`: visual **ground_truth vs predictions** on Drive `data/raw/{valid,test}`.
 
-**Local optional:** `fiftyone_onnx_review.py` — visual side-by-side on 25 samples/split.
-
-**Order in Colab:** Cell 16 (fp32) → Cell 17 (INT8) → **Cell 18 (mAP)** → Cell 19 (push to HF).
+**Order in Colab:** Cell 16 (fp32) → Cell 17 (INT8) → Cell 18 (mAP) → **Cell 19 (FiftyOne)** → Cell 20 (push to HF).
 
 ---
 
@@ -128,22 +127,25 @@ You do **not** need FiftyOne in Colab. Phase 4 `evaluate_onnx.py` prints **fp32 
 | 15 | Download `best_model.pth` from HF Hub (after restart) |
 | 16 | Export fp32 ONNX (opset 16, `dynamo=False`) + verify |
 | 17 | Selective static INT8 + benchmark |
-| 18 | **mAP eval:** valid + test, fp32 vs INT8 (`evaluate_onnx.py`) |
-| 19 | Push `fp32.onnx` + `int8.onnx` → HF Hub + Drive |
+| 18 | **mAP eval:** valid + test (`evaluate_onnx.py`) |
+| 19 | **FiftyOne:** ground_truth vs predictions_fp32/int8 (25 samples/split) |
+| 20 | Push `fp32.onnx` + `int8.onnx` → HF Hub + Drive |
 
-**Cell 18** (`src/evaluate_onnx.py`):
+**Cell 18** (`run_phase4_report` — data on Drive `DATA_DIR/raw`):
 
 ```python
-from src.evaluate_onnx import run_phase4_evaluation
+from src.evaluate_onnx import run_phase4_report
 
-summary = run_phase4_evaluation(
+phase4_report = run_phase4_report(
     fp32_onnx_path=os.path.join(CKPT, "mask2former_fp32.onnx"),
     int8_onnx_path=os.path.join(CKPT, "mask2former_int8.onnx"),
+    raw_dir=os.path.join(os.environ["DATA_DIR"], "raw"),  # Drive images
     splits=["valid", "test"],
-    raw_dir=os.path.join(os.environ["DATA_DIR"], "raw"),
-    score_threshold=0.5,
-    max_samples=50,  # None for full valid+test
+    report_dir=os.path.join(CKPT, "eval_reports"),
+    max_samples=50,
+    show_plots=True,
 )
+# → metrics_by_split.png, per_class_ap_valid.png, per_class_ap_test.png, phase4_eval_report.json
 ```
 
 Local CLI (no FiftyOne required):
@@ -155,7 +157,23 @@ Local CLI (no FiftyOne required):
   --splits valid test
 ```
 
-Local visual QA (optional, subset only):
+**Cell 19** (`src/fiftyone_onnx_review.py`):
+
+```python
+from src.fiftyone_onnx_review import run_visual_review
+
+fo_result = run_visual_review(
+    fp32_onnx_path=fp32_path,
+    int8_onnx_path=int8_path,
+    splits=["valid", "test"],
+    raw_dir=RAW,
+    max_samples_per_split=25,
+    launch_app=True,
+)
+fo_session = fo_result["session"]  # keep alive in Colab
+```
+
+Local CLI (same tool):
 
 ```bash
 .venv/bin/pip install fiftyone
@@ -173,7 +191,7 @@ Local visual QA (optional, subset only):
 - **Splits:** `valid`, `test` under `data/raw/` (Drive: `mask2former-mlops/data/raw/{valid,test}`).
 - **Metrics:** COCO mask mAP via `pycocotools` — aligned with `evaluate.py` (1-indexed `category_id`, same threshold/postprocess).
 - **Speed:** No FiftyOne overhead; direct cv2 read + ONNX + RLE (no base64 roundtrip).
-- **FiftyOne:** Local only, capped samples, correct labels from COCO JSON (not hardcoded `DEFAULT_CATEGORIES`).
+- **FiftyOne (Cell 19):** Colab + local; 25 samples/split; labels from COCO JSON; App fields: `ground_truth`, `predictions_fp32`, `predictions_int8`.
 
 ---
 

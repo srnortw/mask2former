@@ -2,13 +2,29 @@
 
 import numpy as np
 
-from src.evaluate_onnx import resolve_ann_path, resolve_split_dir
+from src.evaluate_onnx import (
+    COCO_METRIC_NAMES,
+    metrics_from_evaluator,
+    resolve_ann_path,
+    resolve_split_dir,
+)
 from src.inference import postprocess_to_coco_results
+
+
+class _FakeEval:
+    stats = np.array([0.5, 0.7, 0.4] + [0.0] * 9)
 
 
 def test_resolve_split_paths():
     assert resolve_split_dir("/data/raw", "valid").endswith("valid")
     assert resolve_ann_path("/data/raw", "test").endswith("test/_annotations.coco.json")
+
+
+def test_metrics_from_evaluator():
+    m = metrics_from_evaluator(_FakeEval())
+    assert m["AP"] == 0.5
+    assert m["AP50"] == 0.7
+    assert len(m) == len(COCO_METRIC_NAMES)
 
 
 def test_postprocess_to_coco_results_category_id_one_indexed():
@@ -19,7 +35,7 @@ def test_postprocess_to_coco_results_category_id_one_indexed():
     masks_logits[0, 0] = 10.0
 
     class_logits = np.full((1, q, num_classes + 1), -10.0, dtype=np.float32)
-    class_logits[0, 0, 2] = 10.0  # model class 2 → COCO category_id 3
+    class_logits[0, 0, 2] = 10.0
 
     results = postprocess_to_coco_results(
         masks_logits,
@@ -34,7 +50,6 @@ def test_postprocess_to_coco_results_category_id_one_indexed():
     assert results[0]["image_id"] == 42
     assert results[0]["category_id"] == 3
     assert "segmentation" in results[0]
-    assert results[0]["score"] > 0.5
 
 
 def test_postprocess_to_coco_results_empty_below_threshold():

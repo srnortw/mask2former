@@ -1,8 +1,10 @@
 """
-FiftyOne visual review for ONNX models (local only).
+FiftyOne visual review for ONNX models (Colab + local).
 
-Loads a small subset per split (default 25) for side-by-side fp32 vs INT8 vs GT.
-Full mAP sign-off uses src/evaluate_onnx.py (fast pycocotools, no FiftyOne).
+Loads a capped subset per split for side-by-side:
+  ground_truth vs predictions_fp32 vs predictions_int8
+
+Full mAP on all images: src/evaluate_onnx.py (fast pycocotools).
 """
 
 from __future__ import annotations
@@ -32,6 +34,19 @@ def _require_fiftyone():
     return fo
 
 
+def _is_colab() -> bool:
+    return "google.colab" in sys.modules
+
+
+def _colab_app_hint(session) -> None:
+    """Print fallback URL when Colab iframe embedding fails (Chrome 403)."""
+    if not _is_colab() or session is None:
+        return
+    url = getattr(session, "url", None)
+    if url:
+        print(f"\nColab: if the App is blank, open in a new tab:\n  {url}?polling=true")
+
+
 def _load_category_names(ann_path: str) -> dict[int, str]:
     """COCO category id (1-indexed) → name from annotations."""
     from pycocotools.coco import COCO
@@ -42,7 +57,8 @@ def _load_category_names(ann_path: str) -> dict[int, str]:
 
 def _model_label_names(cat_names: dict[int, str]) -> dict[int, str]:
     """Map model output index (0-based) → COCO category name."""
-    return {i: cat_names.get(i + 1, str(i)) for i in range(max(len(cat_names), 1))}
+    max_id = max(cat_names.keys()) if cat_names else 0
+    return {i: cat_names.get(i + 1, str(i)) for i in range(max_id)}
 
 
 def instances_to_detections(
@@ -80,17 +96,12 @@ def load_review_dataset(
     raw_dir: str,
     max_samples: int = DEFAULT_MAX_SAMPLES,
     ann_filename: str = ANN_FILENAME,
-    persistent: bool = True,
+    persistent: bool = False,
 ):
     fo = _require_fiftyone()
     name = f"mask2former_review_{split}"
 
-    if persistent and fo.dataset_exists(name):
-        ds = fo.load_dataset(name)
-        if len(ds) <= max_samples:
-            return ds
-        fo.delete_dataset(name)
-    elif fo.dataset_exists(name):
+    if fo.dataset_exists(name):
         fo.delete_dataset(name)
 
     split_dir = os.path.join(raw_dir, split)
@@ -105,7 +116,7 @@ def load_review_dataset(
         max_samples=max_samples,
         overwrite=True,
     )
-    print(f"FiftyOne review '{name}': {len(dataset)} samples (cap={max_samples})")
+    print(f"FiftyOne '{name}': {len(dataset)} samples (cap={max_samples})")
     return dataset
 
 
@@ -147,6 +158,31 @@ def attach_onnx_predictions(
         sample.save()
 
 
+def evaluate_subset(
+    dataset,
+    pred_field: str,
+    eval_key: str,
+    gt_field: str = "ground_truth",
+):
+    """COCO mask mAP on the loaded subset — enables TP/FP/FN filters in the App."""
+    fo = _require_fiftyone()
+    for key in dataset.list_evaluations():
+        if key == eval_key:
+            dataset.delete_evaluation(eval_key)
+
+    results = dataset.evaluate_detections(
+        pred_field,
+        gt_field=gt_field,
+        eval_key=eval_key,
+        method="coco",
+        use_masks=True,
+        compute_mAP=True,
+    )
+    print(f"\n=== {eval_key} ({pred_field} vs {gt_field}) ===")
+    results.print_report()
+    return results
+
+
 def run_visual_review(
     fp32_onnx_path: str,
     int8_onnx_path: str,
@@ -155,18 +191,23 @@ def run_visual_review(
     max_samples_per_split: int = DEFAULT_MAX_SAMPLES,
     img_size: int = 512,
     score_threshold: float = 0.5,
-    launch_app: bool | None = None,
+    launch_app: bool = True,
+    run_eval: bool = True,
+    gt_field: str = "ground_truth",
 ) -> dict[str, Any]:
     """
-    Local FiftyOne visual QA on a subset per split.
+    FiftyOne visual QA: ground_truth vs fp32/int8 predictions.
 
-    launch_app defaults to True on desktop, False in Colab.
+    Works in Colab (embedded App) and locally. Keep returned `session` alive in
+    the notebook so the App stays connected.
     """
     splits = list(splits or DEFAULT_SPLITS)
     assert_onnx_artifacts(fp32_onnx_path, int8_onnx_path)
 
-    if launch_app is None:
-        launch_app = "google.colab" not in sys.modules
+    for split in splits:
+        ann = resolve_ann_path(raw_dir, split)
+        if not os.path.isfile(ann):
+            raise FileNotFoundError(f"Split '{split}' not found: {ann}")
 
     fp32_session = create_session(fp32_onnx_path)
     int8_session = create_session(int8_onnx_path)
@@ -175,15 +216,10 @@ def run_visual_review(
 
     for split in splits:
         ann_path = resolve_ann_path(raw_dir, split)
-        cat_names = _load_category_names(ann_path)
-        label_names = _model_label_names(cat_names)
+        label_names = _model_label_names(_load_category_names(ann_path))
 
-        dataset = load_review_dataset(
-            split,
-            raw_dir,
-            max_samples=max_samples_per_split,
-        )
-        print(f"\n--- {split}: running fp32 + int8 on {len(dataset)} samples ---")
+        dataset = load_review_dataset(split, raw_dir, max_samples=max_samples_per_split)
+        print(f"\n--- {split}: fp32 + int8 inference on {len(dataset)} images ---")
         attach_onnx_predictions(
             dataset,
             fp32_session,
@@ -192,23 +228,39 @@ def run_visual_review(
             score_threshold=score_threshold,
             label_names=label_names,
         )
+
+        if run_eval:
+            evaluate_subset(dataset, "predictions_fp32", f"eval_fp32_{split}", gt_field)
+            evaluate_subset(dataset, "predictions_int8", f"eval_int8_{split}", gt_field)
+
         datasets.append(dataset)
 
+    session = None
+    combined = None
     if launch_app and datasets:
         combined = datasets[0]
         for ds in datasets[1:]:
             combined.merge(ds)
-        print("\nFiftyOne App — compare predictions_fp32 / predictions_int8 / ground_truth")
-        print("For full mAP on all images: python -m src.evaluate_onnx --fp32 ... --int8 ...")
-        fo.launch_app(combined)
 
-    return {"splits": splits, "datasets": [d.name for d in datasets]}
+        print("\nFiftyOne App fields:")
+        print(f"  • {gt_field}  (Roboflow COCO labels)")
+        print("  • predictions_fp32 / predictions_int8")
+        print("  Evaluations tab → filter TP / FP / FN per model")
+        session = fo.launch_app(combined)
+        _colab_app_hint(session)
+
+    return {
+        "splits": splits,
+        "datasets": [d.name for d in datasets],
+        "dataset": combined,
+        "session": session,
+    }
 
 
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="FiftyOne visual ONNX review (local)")
+    parser = argparse.ArgumentParser(description="FiftyOne ONNX visual review")
     parser.add_argument("--fp32", required=True)
     parser.add_argument("--int8", required=True)
     parser.add_argument("--splits", nargs="+", default=list(DEFAULT_SPLITS))
@@ -216,6 +268,7 @@ if __name__ == "__main__":
     parser.add_argument("--max-samples", type=int, default=DEFAULT_MAX_SAMPLES)
     parser.add_argument("--threshold", type=float, default=0.5)
     parser.add_argument("--no-app", action="store_true")
+    parser.add_argument("--no-eval", action="store_true")
     args = parser.parse_args()
 
     run_visual_review(
@@ -226,4 +279,5 @@ if __name__ == "__main__":
         max_samples_per_split=args.max_samples,
         score_threshold=args.threshold,
         launch_app=not args.no_app,
+        run_eval=not args.no_eval,
     )
