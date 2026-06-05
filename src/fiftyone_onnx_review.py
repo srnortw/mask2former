@@ -61,6 +61,21 @@ def _model_label_names(cat_names: dict[int, str]) -> dict[int, str]:
     return {i: cat_names.get(i + 1, str(i)) for i in range(max_id)}
 
 
+def _bbox_from_mask(mask: np.ndarray) -> tuple[float, float, float, float] | None:
+    """
+    Pixel bbox (x, y, w, h). FiftyOne IoU crashes on zero-width/height boxes,
+    so enforce at least 1px extent (thin lane masks can be 1px wide).
+    """
+    ys, xs = np.where(mask > 0)
+    if len(xs) == 0:
+        return None
+    x0, y0 = float(xs.min()), float(ys.min())
+    x1, y1 = float(xs.max()), float(ys.max())
+    bw = max(1.0, x1 - x0 + 1.0)
+    bh = max(1.0, y1 - y0 + 1.0)
+    return x0, y0, bw, bh
+
+
 def instances_to_detections(
     instances: list[dict[str, Any]],
     width: int,
@@ -78,14 +93,19 @@ def instances_to_detections(
         if mask.shape != (height, width):
             mask = cv2.resize(mask, (width, height), interpolation=cv2.INTER_NEAREST)
 
-        x, y, bw, bh = inst["bbox"]
+        mask_bool = mask.astype(bool)
+        box = _bbox_from_mask(mask_bool)
+        if box is None or width <= 0 or height <= 0:
+            continue
+
+        x, y, bw, bh = box
         cat_id = inst["category_id"]
         dets.append(
             fo.Detection(
                 label=label_names.get(cat_id, inst.get("category_name", str(cat_id))),
                 confidence=float(inst["score"]),
                 bounding_box=[x / width, y / height, bw / width, bh / height],
-                mask=mask.astype(bool),
+                mask=mask_bool,
             )
         )
     return fo.Detections(detections=dets)

@@ -141,7 +141,8 @@ def postprocess_instances(
 
         x0, y0 = int(xs.min()), int(ys.min())
         x1, y1 = int(xs.max()), int(ys.max())
-        bbox = [float(x0), float(y0), float(x1 - x0), float(y1 - y0)]
+        # min 1px — avoids zero-area boxes in FiftyOne IoU eval (thin lane masks)
+        bbox = [float(x0), float(y0), max(1.0, float(x1 - x0 + 1)), max(1.0, float(y1 - y0 + 1))]
 
         label = int(labels[q])
         instances.append({
